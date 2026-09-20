@@ -15,7 +15,8 @@ OpenCode is a powerful AI coding assistant — but by default it runs on your ho
 - 💾 **Persistent session state** — each project retains its own OpenCode history and session between container runs
 - 🧹 **Clean environment** — no bleed-over between projects; rebuild any time for a fresh start
 - 🛡️ **Network isolation** — every sandbox gets its own dedicated Docker network and an internal firewall; egress is proxy- or firewall-restricted, and the container is dropped to a non-root user
-- 🧪 **Verified** — a built-in 9-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress — **all blocked**
+- 🧱 **DoS-hardened** — fixed limits on memory, CPU, and process count plus `no-new-privileges`, so one sandbox can never take down the host
+- 🧪 **Verified** — a built-in 11-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress, resource limits active, and two running containers cannot see each other — **all blocked**
 
 **Quick start**
 
@@ -213,8 +214,9 @@ Runs the sandbox security test suite. **No running container needed** — `ocs t
 
 `ocs test` builds and runs from the **reserved** `config/Dockerfile.test` profile (a network-analysis image: `nmap`, `tcpdump`, DNS/traceroute tools, `python3`, `jq`). It is stored under its own tag `ocs-<SANDBOX_ID>-test`, so running the suite **never changes** the project's working image (built from `minimal` or `full`). The test image is cached for a fast re-run; it is removed on a fail/crash and by `ocs kill`.
 
-The suite has two kinds of checks:
-- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network, and that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall.
+The suite has three kinds of checks (11 cases in total):
+- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network, that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, and that **resource limits** (memory, CPU, process count) plus `no-new-privileges` are actually enforced.
+- **Multi-container** — starts a real second container on a scratch network and asserts that the sandbox cannot resolve its name or connect to its IP: two running sandboxes never see each other.
 - **AI-agent red-team** — drives the configured model (via `opencode run`) to actively try six escapes (proxy bypass, direct egress, privilege escalation, root-file read, system write, secret read). The agent writes a JSON report to `/tmp` inside the container; the runner then fails if the agent reports any attack as `succeeded`.
 
 If the AI-agent case cannot reach the configured model endpoint (e.g. the Ollama server's `ip:port` is not in `intranet-endpoints`), it SKIPs with a hint; the deterministic cases still provide the security signal.
@@ -292,7 +294,7 @@ Use it to discover the name to pass to other `ocs <command> <name>` invocations.
 
 ## Network isolation
 
-Isolation works on two levels:
+Isolation works on three levels:
 
 **1. Own Docker network (L2 separation).** Every sandbox container runs on a dedicated Docker network named `ocs-net-<SANDBOX_ID>`, created automatically on first use. All sandboxes get their addresses from the range configured under `sandbox-network-cidr` (default **`10.77.0.0/16`**, so containers live on `10.77.x.x`); each sandbox receives its own `/24` inside that range. Consequences:
 
@@ -304,7 +306,9 @@ Isolation works on two levels:
 
 All outbound traffic is routed via the proxy automatically through the standard `http_proxy` / `https_proxy` environment variables set by the container entrypoint.
 
-> **Notes:** The container requires the `NET_ADMIN` Docker capability for `iptables` — this is added automatically by the run commands. The sandbox container can **not** talk to the host Docker daemon: no socket is mounted and no `docker`/`podman` CLI is installed.
+**3. Resource limits (host-DoS guard).** Every container run gets fixed, host-safe caps so a misbehaving or prompt-injected agent cannot exhaust the machine: memory `4g` (swap locked to the same value), CPU `2.0`, process count `256`, and `no-new-privileges` (setuid escalation is blocked even without any caps granted). The values are defaults set in `bin/shared` (`build_run_flags`); raise them there in `bin/shared` if a project needs more, then start your container again (no rebuild required — the limits are applied at run time, not baked into the image). These limits are asserted inside the container by `ocs test` (case 10).
+
+> **Notes:** The container requires the `NET_ADMIN` Docker capability for `iptables` — this is added automatically by the run commands. The sandbox container can **not** talk to the host Docker daemon: no socket is mounted and no `docker`/`podman` CLI is installed. Two containers running in parallel (e.g. `ocs start` + `ocs tui`) provably cannot reach each other: `ocs test` starts a second "peer" container on a scratch network and verifies from inside the sandbox that neither its name resolves nor a connection to its IP succeeds (case 11).
 
 ---
 

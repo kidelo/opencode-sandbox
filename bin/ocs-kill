@@ -16,9 +16,9 @@ set -euo pipefail
 # only part that is safe to lose (ocs rebuild regenerates it); --state also
 # deletes the opencode session and the subnet map.
 #
-# Only objects named `ocs-*` / `ocs-net-*` (and the legacy `opencode-sandbox-*`
-# scheme from before the rename) are ever touched; everything else in the
-# Docker environment is left alone. Idempotent.
+# Only objects named `ocs-*` / `ocs-net-*` / `ocs-scratch-*` (and the legacy
+# `opencode-sandbox-*` scheme from before the rename) are ever touched;
+# everything else in the Docker environment is left alone. Idempotent.
 
 # Source common configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,7 +48,7 @@ done
 # objects created before the rename are cleaned up by the same command.
 CONTAINER_MATCH="^(ocs|opencode-sandbox)-"
 IMAGE_MATCH="^(ocs|opencode-sandbox)-"
-NET_MATCH="^(ocs-net|opencode-sandbox-net)-"
+NET_MATCH="^(ocs-net|opencode-sandbox-net|ocs-scratch)-"
 if [[ -n "${FILTER}" ]]; then
   CONTAINER_MATCH="${CONTAINER_MATCH}.*${FILTER}"
   IMAGE_MATCH="${IMAGE_MATCH}.*${FILTER}"

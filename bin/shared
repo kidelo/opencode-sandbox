@@ -398,10 +398,10 @@ compute_cap_flags() {
   CAP_FLAGS=(--cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID)
 }
 
-# Build the docker-run flag array for the sandbox: caps, workspace mount
-# (the single user rw dir), opencode state (ro? no — rw persistent), the
-# read-only opencode.jsonc, env-passthrough, static env, extra volume mounts,
-# add-host, and the dedicated network.
+# Build the docker-run flag array for the sandbox: caps, resource limits,
+# workspace mount (the single user rw dir), opencode state (ro? no — rw
+# persistent), the read-only opencode.jsonc, env-passthrough, static env,
+# extra volume mounts, add-host, and the dedicated network.
 # Requires: CONTAINER_NAME, SANDBOX_ID, ROOT_DIR, SANDBOX_WORKSPACE_DIR,
 #           OPENCODE_STATE_DIR, OPENCODE_SANDBOX_DIR.
 # Result: populates RUN_FLAGS (array), RUN_LOG (array of human lines), and
@@ -409,6 +409,19 @@ compute_cap_flags() {
 build_run_flags() {
   compute_cap_flags
   RUN_FLAGS=("${CAP_FLAGS[@]}")
+
+  # Resource limits + privilege hardening (defense-in-depth against host
+  # DoS from a misbehaving / prompt-injected agent): unbounded RAM, CPU or
+  # process counts would let one sandbox take down the host; NoNewPrivs
+  # blocks setuid escalation even though the bounding set is already
+  # minimized. Values are fixed sensible defaults — raise them here if a
+  # project needs more, then `ocs rebuild` is NOT required (run flags are
+  # assembled at start time, only the image is cached).
+  RUN_FLAGS+=("--memory=4g" "--memory-swap=4g")
+  RUN_FLAGS+=("--cpus=2.0")
+  RUN_FLAGS+=("--pids-limit=256")
+  RUN_FLAGS+=("--security-opt=no-new-privileges:true")
+  RUN_LOG+=("    limits   (doS guard): memory=4g, cpus=2.0, pids=256, no-new-privileges=true")
 
   # The single user read-write dir, at a fixed in-container path.
   RUN_FLAGS+=(-v "${SANDBOX_WORKSPACE_DIR}:/workspace")

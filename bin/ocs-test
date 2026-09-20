@@ -53,7 +53,51 @@ TEST_CONTAINER="${CONTAINER_NAME}-test-$$"
 
 build_run_flags
 
-trap 'echo; "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true' EXIT
+# ---------------------------------------------------------------------------
+# Peer container for case 11 (two-container isolation): a second sandboxed
+# container on a SCRATCH network (neither the sandbox net nor the default
+# bridge) that runs a realistic entrypoint (firewall + root→dev drop). The
+# case checks from the test container that the peer is neither resolvable by
+# name (Docker DNS is per-network) nor reachable by IP (no cross-network
+# route). Cleaned up before the test image is removed (the peer uses it).
+# ---------------------------------------------------------------------------
+PEER_NET="ocs-scratch-$(printf '%s' "${SANDBOX_ID}" | cksum | cut -d' ' -f1 | cut -c1-8)"
+PEER_NAME="${CONTAINER_NAME}-peer-$$"
+PEER_IP=""
+PEER_STARTED=0
+"${CONTAINER_RUNTIME}" network create "${PEER_NET}" >/dev/null 2>&1 || true
+if "${CONTAINER_RUNTIME}" run -d --init \
+  --name "${PEER_NAME}" \
+  --network "${PEER_NET}" \
+  --memory=1g --memory-swap=1g --cpus=1.0 --pids-limit=64 \
+  --security-opt=no-new-privileges:true \
+  --cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID \
+  -e "OPCODE_CMD=sleep infinity" \
+  "${TEST_IMAGE}" >/dev/null 2>&1; then
+  # Wait briefly for the entrypoint to reach the long sleep (or exit).
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    STATE="$("${CONTAINER_RUNTIME}" inspect -f '{{.State.Running}}' "${PEER_NAME}" 2>/dev/null)"
+    if [[ "${STATE}" == "true" ]]; then
+      PEER_STARTED=1
+      break
+    fi
+    sleep 0.5
+  done
+  PEER_IP="$("${CONTAINER_RUNTIME}" inspect -f '{{range $n, $c := .NetworkSettings.Networks}}{{$c.IPAddress}} {{end}}' "${PEER_NAME}" 2>/dev/null | awk '{print $1}')"
+fi
+if [[ "${PEER_STARTED}" -eq 1 ]]; then
+  echo "Started peer container ${PEER_NAME} (${PEER_IP}) on scratch network ${PEER_NET} for case 11"
+else
+  echo "WARNING: peer container could not be started — case 11 will SKIP"
+fi
+
+stop_and_remove_peer() {
+  "${CONTAINER_RUNTIME}" stop "${PEER_NAME}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" rm -f "${PEER_NAME}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" network rm "${PEER_NET}" >/dev/null 2>&1 || true
+}
+
+trap 'stop_and_remove_peer; echo; "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true' EXIT
 
 CIDR="$(tr -d '[:space:]' < "${SANDBOX_CIDR_FILE}" 2>/dev/null || echo 10.77.0.0/16)"
 "${CONTAINER_RUNTIME}" run -d --init \
@@ -85,6 +129,8 @@ for case_file in "${CASES_HOST_DIR}"/*.sh; do
   output="$("${CONTAINER_RUNTIME}" exec \
     -u dev \
     -w /workspace \
+    -e "PEER_NAME=${PEER_NAME}" \
+    -e "PEER_IP=${PEER_IP}" \
     "${TEST_CONTAINER}" \
     bash "${SANDBOX_HOME}/test/cases/${case_name}.sh" 2>&1)"
   rc=$?
@@ -112,6 +158,7 @@ if [[ ${fail_count} -gt 0 ]]; then
   echo "A security check failed - removing the test image so only known-good builds are used."
   echo "      (inspect the case output above for escape evidence)"
   trap - EXIT
+  stop_and_remove_peer
   "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true
   "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true
   "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true
@@ -119,6 +166,7 @@ if [[ ${fail_count} -gt 0 ]]; then
   exit 1
 fi
 trap - EXIT
+stop_and_remove_peer
 "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true
 "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true
 echo "all security checks passed"

@@ -251,6 +251,8 @@ If it contains secrets, add it to `.gitignore`.
 - **"port is already allocated"** — two sandboxes are using the same `opencode-port`. Use different ports, or switch to the portless one-shot modes.
 - **Agent case SKIPs in `ocs test`** — the model endpoint (your Ollama `ip:port`) is not reachable from the container. Add it to `intranet-endpoints` in `config/opencode-sandbox-config.yaml` and rebuild.
 - **A test case FAILed and the image vanished** — by design. `ocs rebuild` brings it back.
+- **Container runs out of memory / is killed (OOM) or feels CPU-limited** — every sandbox runs with host-DoS guards by default: `--memory=4g --cpus=2.0 --pids-limit=256 --security-opt=no-new-privileges:true` (see README → Network isolation). Raise the values in `bin/shared` (`build_run_flags`) and start again — no rebuild needed.
+- **`ocs test` case 11 says "peer container not started"** — the runner could not bring up the second isolation-check container (e.g. image missing or runtime hiccup). Re-run `ocs test`; the deterministic cases are unaffected.
 - **Container won't start after a manual docker mess** — `ocs kill` resets all sandbox containers/images/networks (and only those).
 - **Where is my session history?** — `<project>/.sandbox/state/opencode/`, mounted at `/home/dev/.local/share/opencode`. `ocs kill` does **not** delete it (only `ocs kill --state` does).
 
