@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ocs-run — run a one-shot opencode session (opencode run), inside the sandbox.
+# The model is pinned to the configured sandbox model; webfetch/websearch are
+# denied by opencode.
+#
+#   ocs-run <prompt> [extra opencode-run args...]
+#
+# <prompt> is either:
+#   - a path to a prompt file: read inside/outside the workspace as before
+#     (inside -> read in place; outside -> mounted read-only for the run)
+#   - an inline prompt string (any non-file argument): written to a temp
+#     file on the host and mounted read-only into the container for this run
+#
+# This lets a script drive the agent without creating a prompt file, e.g.:
+#   ocs run my-sandbox "Summarize this repo"          # inline
+#   ocs run my-sandbox prompt.md -f context.md        # file, plus extra args
+
+# Source common configuration
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/shared"
+
+if [[ ${#} -lt 1 || "${1}" == "-h" || "${1}" == "--help" ]]; then
+  cat <<'EOF'
+usage: ocs-run <prompt> [extra opencode-run args...]
+
+<prompt> is either:
+  - a path to a prompt file (read in place if inside the workspace,
+    mounted read-only if outside)
+  - an inline prompt string (any other non-file argument) — written to
+    a temp file and mounted read-only for this run
+
+Extra args are passed through to 'opencode run' (e.g. -f other.md,
+--format json).
+EOF
+  [[ ${#} -lt 1 ]] && exit 1
+  exit 0
+fi
+
+use_sandbox_root
+print_sandbox_dir
+
+PROMPT_ARG="${1}"; shift
+
+# Resolve the prompt: either an existing file (use it) or an inline prompt
+# string (any other argument) — written to a temp file and mounted ro.
+INLINE_PROMPT_FILE=""
+if [[ -f "${PROMPT_ARG}" ]]; then
+  PROMPT_FILE="$(cd -- "$(dirname -- "${PROMPT_ARG}")" && pwd)/$(basename -- "${PROMPT_ARG}")"
+  PROMPT_KIND="file"
+else
+  PROMPT_FILE="$(mktemp "${TMPDIR:-/tmp}/ocs-inline-prompt.XXXXXX")"
+  printf '%s\n' "${PROMPT_ARG}" > "${PROMPT_FILE}"
+  INLINE_PROMPT_FILE="${PROMPT_FILE}"
+  PROMPT_KIND="inline"
+fi
+
+# Clean up the inline temp file + any leftover container on ANY exit path
+# (including the early 'run ocs rebuild first' exits below). Docker --rm
+# already removes the container on a normal exit; the trap is a safety net
+# for Ctrl-C / kill and for the inline temp file. (NAME is defined later;
+# the guard below tolerates it being unset.)
+cleanup_run() {
+  if [[ -n "${NAME:-}" ]]; then
+    "${CONTAINER_RUNTIME}" rm -f "${NAME}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${INLINE_PROMPT_FILE:-}" && -f "${INLINE_PROMPT_FILE:-}" ]]; then
+    rm -f -- "${INLINE_PROMPT_FILE}" || true
+  fi
+  return 0
+}
+trap cleanup_run EXIT
+
+if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
+  echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
+  echo "Run ocs rebuild first."
+  exit 1
+fi
+
+if ! "${CONTAINER_RUNTIME}" image inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+  echo "Container image ${CONTAINER_NAME} is not available locally."
+  echo "Run ocs rebuild first."
+  exit 1
+fi
+
+build_run_flags
+
+# Inner path of the prompt file: the workspace is mounted at /workspace (rw),
+# so a prompt inside it is reachable at /workspace/<rel> in place. A prompt
+# outside it — or an inline prompt string — gets a read-only single-file
+# mount (keeps the host view minimal; inline prompts are always mounted in).
+INNER_PATH=""
+if [[ -z "${INLINE_PROMPT_FILE}" && ( "${PROMPT_FILE}" == "${SANDBOX_WORKSPACE_DIR}"/* || "${PROMPT_FILE}" == "${SANDBOX_WORKSPACE_DIR}" ) ]]; then
+  INNER_PATH="/workspace/${PROMPT_FILE#"${SANDBOX_WORKSPACE_DIR}/"}"
+  P_EXTRA_FLAGS=()
+else
+  INNER_PATH="/tmp/ocs-prompt-${PROMPT_FILE##*/}"
+  P_EXTRA_FLAGS=(-v "${PROMPT_FILE}:${INNER_PATH}:ro")
+fi
+
+# OPCODE_CMD is eval'd inside the container by the entrypoint as 'dev';
+# $(cat ...) runs there, so the prompt content never touches the host shell.
+# shellcheck disable=SC2016
+OPCODE_CMD="exec opencode run -m '${OPENCODE_MODEL}' \"\$(cat '${INNER_PATH}')\""
+if [[ ${#} -gt 0 ]]; then
+  ESCAPED_ARGS="$(printf '%q ' "$@")"
+  OPCODE_CMD=" ${OPCODE_CMD} ${ESCAPED_ARGS}"
+fi
+
+NAME="${CONTAINER_NAME}-run-$$"
+
+echo "Running one-shot opencode session (model: ${OPENCODE_MODEL}) ..."
+echo "   container: ${NAME}"
+if [[ -n "${INLINE_PROMPT_FILE}" ]]; then
+  echo "   prompt:    (inline, ${#PROMPT_ARG} chars)"
+else
+  echo "   prompt:    ${PROMPT_FILE} (${PROMPT_KIND})"
+fi
+echo "   inner:     ${INNER_PATH}"
+for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done
+echo "---"
+echo ""
+
+"${CONTAINER_RUNTIME}" run --rm --init \
+  --name "${NAME}" \
+  -e "OPCODE_CMD=${OPCODE_CMD}" \
+  -e "OPENCODE_MODEL=${OPENCODE_MODEL}" \
+  "${P_EXTRA_FLAGS[@]+"${P_EXTRA_FLAGS[@]}"}" \
+  "${RUN_FLAGS[@]}" \
+  "${CONTAINER_NAME}"

@@ -10,35 +10,100 @@ Every change to the user experience (new commands, changed behaviour, new files 
 
 This project uses itself as its own sandbox — the AI agent runs **inside the opencode-sandbox container** for this repository. This means:
 
-- The workspace is mounted at the same full absolute path inside the container as on the host
-- Outbound network access is restricted to the domains whitelisted in `opencode-sandbox-config.yaml`
-- Host environment variables are forwarded as configured in the `env-passthrough` section — in particular `GH_TOKEN` for GitHub CLI access
-- `docker` CLI is available inside the container (installed via `mise.toml`) and communicates with the **host Docker daemon** via the mounted socket (`docker-in-docker: true`) — containers it creates are siblings on the host, not nested children; bind-mount paths in `docker run -v` must use host-side absolute paths
-- `podman` is **not available** inside the container
-- `ocs-rebuild-container` and `ocs-start-container` cannot be run here (they manage the sandbox container itself from the host) — ask the user to run them on the host
-- The `gh` CLI is available and authenticated via `GH_TOKEN` for reading and commenting on PRs and issues, but **not** for pushing code or creating branches — do not attempt `git push` or `git fetch`
+- The single user rw dir is the project's **workspace** (`workspace:` key, default `workspace/`; the repo uses `.`), mounted at the fixed path `/workspace`. `.sandbox/` (build context + opencode state) is gitignored and — for the self-hosted repo where it sits inside the mounted tree — is **masked in-container with an empty read-only dir** so it never appears in `/workspace`
+- `config/opencode.jsonc` (model/provider/permissions) is mounted **read-only** at `/etc/opencode/opencode.jsonc` (`$OPENCODE_CONFIG`): opencode reads it but **cannot rewrite it**
+- Outbound network access is restricted to what is configured in `config/opencode-sandbox-config.yaml`: domains whitelisted via Squid, plus direct `host-ports` / `intranet-endpoints`. Squid is started **only** when `http-domain-whitelist` is non-empty; otherwise egress is firewall-only (the iptables default-deny still applies)
+- Host environment variables are forwarded as configured in the `env-passthrough` section — e.g. `GH_TOKEN` (as an API credential usable with `curl`; there is no `gh` CLI in the container)
+- **No docker/podman inside the container**: no socket is mounted and no container runtime CLI is installed (there was no `docker-in-docker` option — it was fully removed). The container is also on a dedicated per-sandbox Docker network, so it cannot reach other host containers either
+- `ocs rebuild` and `ocs start` cannot be run here (they manage the sandbox container itself from the host) — ask the user to run them on the host
+- `gh` and `glab` CLIs are **not installed** (deliberately dropped) — do not expect them; use the API via `curl` with forwarded tokens. **Never** attempt `git push` or `git fetch`
 - SSH is not available inside the container — `git push` and `git fetch` will fail; do not modify `git remote` URLs
-- `shellcheck` is available for linting
+- `shellcheck` is available for linting (installed via `apt`: bookworm 0.9.0)
 
 ## Lint (only CI-equivalent check)
 
 ```sh
-shellcheck bin/* shared entrypoint.sh
+shellcheck ocs bin/* bin/shared docker/entrypoint.sh
 ```
 
 No tests, no formatter, no typecheck, no CI workflows.
 
+### Manual smoke-test routine
+
+After changing `config/Dockerfile.<profile>`, `docker/entrypoint.sh`, or `bin/*` (run from the host):
+
+1. `ocs rebuild` — must print the extraction counts and build cleanly
+2. `ocs start <name>` — container must come up and OpenCode must answer on `http://127.0.0.1:<port>`
+3. `ocs test <name>` — automated security suite (builds/uses the **reserved** `Dockerfile.test` profile under its own `-test` image tag; starts its own one-shot test container; no web session needed): deterministic assertions (unprivileged user, no sensitive files, no docker escape channel, network isolation) plus an AI-agent red-team that must report all escapes blocked. Any FAIL is a regression — ocs test then removes the test image. A SKIP in the agent case usually means the model endpoint is not in `intranet-endpoints`
+4. `ocs clean <name>` (one project) or `ocs kill` (all projects) — or just `docker rm` the test/web containers; `ocs clean` is the nuclear per-project option (also wipes the image and the in-project `.sandbox/` trees)
+
+> **Self-hosted repo:** for this repository's own sandbox (which has its own `config/opencode-sandbox-config.yaml`), the `ocs` project-name argument can be **omitted** when the current directory is inside the project — `ocs` then resolves the project from the current directory (e.g. `ocs rebuild`, `ocs test` from the repo root).
+
 ## Conventions
 
-- All `bin/` scripts: `set -euo pipefail` + `source shared`
-- After sourcing `shared`, re-assign `SCRIPT_DIR` if the script references other `bin/` scripts by path — `shared` overwrites `SCRIPT_DIR` with its own location
-- `shared` provides: `find_sandbox_root` (walks up to `.opencode-sandbox/`), `use_sandbox_root`, `open_url`, `refresh_root_paths`
-- `ocs-rebuild-container` must run from the **project root** (where `mise.toml` lives); all other `ocs-*` commands auto-detect root by walking up
-- Container name is derived from project dir name: `opencode-<dirname>`
-- Init templates (copied into target projects by `ocs-init`) live in `init-templates/`
-- Project-specific init templates (e.g. for UCP) live in `init-templates/<project>/` — copy them manually into the target repo root, replacing `REPLACE_WITH_REPO_NAME` placeholders before running `ocs-init`
-
+- **Single entry point:** the root script `ocs` is the user-facing command and dispatches to `bin/ocs-*` (see its `case` list). New subcommands = add a `case` arm in `ocs` + a `bin/ocs-*` implementation (or reuse an existing one). Keep user-facing messages referring to `ocs <subcommand>`, not `bin/ocs-*` paths. **Current surface (keep in sync with `ocs help`):** `init <name> [-y|--dockerfile <p>|--no-build]`, `rebuild`, `start`, `tui`, `run` (prompt **file or inline string**; first arg is the *name* only when it is a known project, otherwise the *prompt* and the project is resolved from CWD), `web`, `web-auth`, `terminal`, `test`, `list`, `clean` (alias `clear`), `kill`
+- All `bin/` scripts: `set -euo pipefail` + `source bin/shared` (i.e. `source "${SCRIPT_DIR}/shared"`)
+- After sourcing `shared`, re-assign `SCRIPT_DIR` if the script references other `bin/` scripts by path — `shared` overwrites `SCRIPT_DIR` with its own location (`bin/`)
+- `bin/shared` provides: `find_sandbox_root` (walks up to `config/opencode-sandbox-config.yaml`), `use_sandbox_root`, `open_url`, `refresh_root_paths`, `valid_sandbox_cidr` / `derive_sandbox_subnet` / `ensure_sandbox_network`; it sets `SANDBOX_HOME` to the repo root (its parent) — keep that invariant
+- New sandbox projects are created under `./sandboxes/<name>/` (repo-local; override: `$OPENCODE_SANDBOX_BASE`; constant `SANDBOXES_BASE` in `bin/shared`) via `ocs init <name>`. `./sandboxes/` is gitignored by default — new projects are not committed to the repo unless you `git add` them
+- **Addressing:** `ocs <command> <project> [args]` — the dispatcher resolves the project dir from the name (or, without a name, from the current directory) and `cd`s into it before invoking the `bin/ocs-*` implementation. New subcommands = add a `case` arm in `ocs` (project-scoped ones go in the `resolve_project` branch) + a `bin/ocs-*` implementation. Keep user-facing messages referring to `ocs <command>`, not `bin/ocs-*` paths
+- **Naming scheme:** `SANDBOX_ID` = `sandbox-name` + short hash of the project root path (computed in `bin/shared`). Every Docker object for a project is named with the short shared prefix **`ocs-`** + the ID: container `ocs-<SANDBOX_ID>` (one-shot runs append `-tui-$$` / `-run-$$` / `-test-$$`; `ocs terminal` attaches to the running web container and does not create its own), image `ocs-<SANDBOX_ID>`, test image `ocs-<SANDBOX_ID>-test`, network `ocs-net-<SANDBOX_ID>`. The prefix is short so users can `docker ps | grep '^ocs-'`. The legacy `opencode-sandbox-<SANDBOX_ID>` / `opencode-sandbox-net-<SANDBOX_ID>` scheme from before the rename is still matched (and cleaned) by `ocs clean` and `ocs kill`
+- The entrypoint execs whatever `OPCODE_CMD` says as `dev` (if set), otherwise falls back to `opencode web --mdns --port ${OPENCODE_PORT}`. All container front doors (ocs start, ocs tui, ocs run, ocs test) go through the same entrypoint → squid+firewall always come first
+- **No long-running container**: every door is a one-shot `docker run`. The only persistent artifact is the **image** (plus the per-sandbox Docker network). Nothing in `bin/` assumes a running sandbox except while that door is alive
+- **Capabilities — least privilege**: every `docker run` uses `--cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID`, assembled by `compute_cap_flags()` in `bin/shared` (the single source). `NET_ADMIN` is required for the container-internal iptables firewall; `SETUID`+`SETGID` are required for the `gosu dev` root→dev drop that **every** door performs (and for squid's root→proxy drop when squid runs) — they cannot be trimmed without `gosu dev` failing with "operation not permitted". Everything else (mknod, dac_override, chown, kill, …) is dropped so the bounding set is exactly `{NET_ADMIN, SETUID, SETGID}` (CapBnd `00000000000010c0`). Any new door must reuse `build_run_flags` so it gets these
+- **`/opencode-password` is `root:root 0600`** (enforced in every `config/Dockerfile.*`): the entrypoint (root) is the sole reader — it seeds `OPENCODE_SERVER_PASSWORD`, which `gosu` passes to dev as env. Dev never reads the file. Keeping it root-owned means the container does not need the `DAC_OVERRIDE` cap
+- **In-container mounts (the full map, all set by `build_run_flags`):** (1) the **workspace** (`workspace:` key, default `workspace/`) → `/workspace` (rw — the single user rw dir); (2) the opencode **state** tree (`.sandbox/state/opencode/`, persistent) → `/home/dev/.local/share/opencode` (rw — a neutral path; this is opencode's own session data, reusable across runs); (3) `config/opencode.jsonc` → `/etc/opencode/opencode.jsonc` (ro, via `$OPENCODE_CONFIG`; the agent reads it but cannot rewrite it). For the self-hosted repo (`workspace: .`) the runtime tree `.sandbox/` sits inside the mounted workspace, so `build_run_flags` masks it with an empty read-only dir at `/workspace/.sandbox` so it is never visible. `.git`, `config/` (yaml), and the rest of the host tree are **not** mounted. Override the base with `$OPENCODE_SANDBOX_RUNTIME_BASE` / `$OPENCODE_SANDBOX_BUILD_BASE` / `$OPENCODE_SANDBOX_STATE_BASE`
+- The shared model constant is `OPENCODE_MODEL` in `bin/shared` (keep in sync with `model` in `config/opencode.jsonc`). Every CLI invocation pins it with `-m`; opencode.jsonc additionally locks `enabled_providers: ["ollama"]` and denies `webfetch` / `websearch`
+- `build_run_flags` (in `bin/shared`) is the single place that assembles env passthrough / static env / extra mounts / add-host / `--network` for `docker run`; new `bin/ocs-*` container commands must reuse it — that is what gives every run the dedicated sandbox network
+- Config templates (copied into target projects by `ocs init`) live in `config/` — **the single source**: the repo's own `config/` and the template are the same files. `config/` also holds the Docker image **profiles** `Dockerfile.<name>` (see below)
+- **Image profiles:** `config/Dockerfile.minimal` (harness + python3, the default), `config/Dockerfile.full` (full dev toolchain), and the reserved `config/Dockerfile.test` (network-analysis suite for `ocs test`). A project picks one via the `dockerfile:` config key (default `minimal`); `ocs rebuild` builds `config/Dockerfile.$(dockerfile)` under `ocs-<SANDBOX_ID>`. `ocs test` builds the *reserved* `test` profile under a separate tag `ocs-<SANDBOX_ID>-test` (via `OPENCODE_DOCKERFILE_OVERRIDE=test`) so it never clobbers the working image; that test image is cached on a pass (fast re-run) and removed on a fail/crash (`ocs kill` removes it too). `ocs init` lists the `Dockerfile.*` files (excluding `test`) and prompts for a profile, writing `dockerfile:` into the new project config
+- Container-runtime files (`docker/entrypoint.sh`, `docker/squid.conf`) live under `docker/` — they are copied flat into the build context by `ocs rebuild`, so their `COPY`-relative layout in the Dockerfile profiles stays unchanged
+- Security test suite: `test/common.sh` (helpers) + `test/cases/*.sh` run **inside** a one-shot container started by `ocs test` (it does not need a running web session). Add new cases as `test/cases/<NN>-<name>.sh` (NN in zero-padded order), exit 0 = PASS / 1 = FAIL / 0 with a leading `SKIP:` line = skipped. Keep each case self-contained; the AI-agent case (08) drives `opencode run` non-interactively, writes its JSON report to `/tmp` (not the workspace), judged by case 09
+- Cleanup: `ocs kill` removes all sandbox containers, images, and networks (all three `ocs-*` name families) across all projects — safe after crashes/aborts; optional name filter as first argument. `ocs clean <name>` is the **nuclear per-project** variant: removes exactly one project's containers (running + stopped), **both images** (working + `-test`), dedicated network, **and** both on-disk trees (`.sandbox/build/`, `.sandbox/state/`), never touching the project's source files or any other project. Use `clean` to discard one sandbox's runtime; use `kill` to reset the whole host's sandbox set
 ## Design decisions
+
+### Image profiles (Dockerfile.minimal / .full / .test)
+
+The image base is `python:3.13-slim-bookworm` (Debian 12) for **every** profile. **All OS packages** are installed via `apt` (no `mise`/Nix toolchain layer). Python libraries ship two ways, depending on profile: `apt` (the base `python3`) and `pip` (the `full` profile adds the dev data/office/sci stack). There is no separate package-manager layer.
+
+Profiles (each a self-contained `config/Dockerfile.<name>`, all sharing the same `docker/entrypoint.sh` + `docker/squid.conf` + harness):
+- **`Dockerfile.minimal`** (the default) — harness only: `squid iptables gosu iproute2 xdg-utils git curl procps` + `python3` (base, no pip) + the opencode CLI + headless `xdg-open` stub. Smallest attack surface; fits most agent work that just needs shell + python + network.
+- **`Dockerfile.full`** — everything `minimal` has **plus** the dev toolchain: build tools, `shellcheck`, and a large `pip` install (pandas/numpy/scipy/matplotlib + office/PDF/OCR/image/HTML/email/sci/ML libs) plus `tesseract-ocr`, ghostscript, mupdf, graphviz, the font stack, and `freetds` (for `pymssql`). `yearfrac` is pinned to `0.4.8` (its sdist build is broken at the latest release).
+- **`Dockerfile.test`** (reserved, **not selectable**) — harness + `python3` + `jq` + the full network-analysis suite (`nmap tcpdump net-tools iproute2 iputils-ping netcat-openbsd dnsutils whois traceroute mtr-tiny`). Used **only** by `ocs test`, which builds it under the separate tag `ocs-<SANDBOX_ID>-test` and always removes it on exit. A project can never set `dockerfile: test`.
+
+OpenCode is **not** in Debian, so it comes from the official installer (`https://opencode.ai/install | bash -s -- --no-modify-path`) and is copied to `/usr/local/bin/opencode` in every profile.
+
+`gh` and `glab` CLIs are deliberately **not** installed. GitHub/GitLab access must go through the REST API (`curl`) using tokens forwarded from the host.
+
+### No container runtime inside the sandbox (docker-in-docker removed)
+
+An earlier version of the sandbox supported `docker-in-docker: true`, which installed `docker.io` into the image and mounted the host Docker socket, letting the agent build/run host containers. **That capability was fully removed** (Dockerfile, entrypoint, rebuild config key, tests 06/08/09) because a mounted host socket is the single most powerful escape vector. Test case 06 now *hard-fails* if a socket, `docker` CLI, or `podman` CLI is present in the image. Do not reintroduce any of them as a "feature".
+
+### Per-sandbox dedicated Docker network (configured IP range)
+
+Every `docker run` (web / TUI / one-shot / test) attaches to a **named, persistent** network `ocs-net-<SANDBOX_ID>` created on demand by `ensure_sandbox_network()` in `bin/shared` (via `build_run_flags`).
+
+IP range: the config key **`sandbox-network-cidr`** (top-level scalar; default `10.77.0.0/16`) defines the shared range for **all** sandboxes on this host. `ocs rebuild` writes it to the state dir (`sandbox-network-cidr.txt`); `derive_sandbox_subnet()` (in `bin/shared`) then assigns this sandbox a **deterministic /24 inside that range** (hash of `SANDBOX_ID`, persisted in `sandbox-network-map` so it survives rebuilds). If the configured range changes, existing networks are recreated with the new subnet.
+
+Effects:
+- All sandbox containers live inside the configured private range (e.g. `10.77.x.x`)
+- Two different projects can never share an L2 segment → no cross-container reachability in either direction
+- Sandbox containers are invisible to — and cannot probe — other Docker containers on the host (which stay on the default bridge or their own networks, completely unaffected)
+- All *container* artifacts of one sandbox share the same `SANDBOX_ID`-derived names (container/image/network) — one fixed identity per project, used by every door
+
+Note: parallel runs of the **same** sandbox (web + TUI) also share the opencode state dir — that is a known concurrency limitation (opencode's sqlite may lock), not an isolation one.
+
+The network is persistent by design; `ocs clean <name>` / `ocs kill` remove it. The container-internal firewall (Squid + default-deny OUTPUT) still bounds every other outbound direction.
+
+### `intranet-endpoints` — direct IPv4:port firewall allowlist
+
+`opencode-sandbox-config.yaml` accepts an `intranet-endpoints:` list of `ipv4:port` entries (one per line, no ranges, no CIDR). This is a generalisation of `host-ports` for on-prem services not running on the host.
+
+- `ocs rebuild` extracts these into `intranet-endpoints.txt` and validates the `ipv4:port` shape (port 1–65535).
+- The Dockerfile profiles (`config/Dockerfile.*`) each copy it to `/etc/intranet-endpoints.txt`.
+- `docker/entrypoint.sh` adds one `iptables -A OUTPUT -d <ip> -p tcp --dport <port> -j ACCEPT` per entry (so the connection bypasses Squid) **and** appends each IP to `no_proxy`/`NO_PROXY` so clients don't route it through the proxy.
+
+A rebuild is required after changing this section.
 
 ### `opencode-sandbox-config.yaml` — YAML subset parsed in bash
 
@@ -55,7 +120,7 @@ The parser distinguishes scalars from section headers by whether a value is pres
 
 To add a new top-level scalar: declare a `cfg_<name>` variable before the parse loop, add a `case` arm inside the loop, and add the corresponding behaviour in the "Post-parse: apply scalar flags" block after the loop.
 
-Anything outside this subset — anchors, multi-line strings, nested structures, typed values — is silently ignored by the parser in `ocs-rebuild-container`. Do not add configuration that relies on YAML features beyond the above. If richer configuration is ever needed, switch to a proper YAML parser (`yq`) rather than extending the bash parser.
+Anything outside this subset — anchors, multi-line strings, nested structures, typed values — is silently ignored by the parser in `ocs rebuild`. Do not add configuration that relies on YAML features beyond the above. If richer configuration is ever needed, switch to a proper YAML parser (`yq`) rather than extending the bash parser.
 
 ### bash 3.2 compatibility (macOS)
 

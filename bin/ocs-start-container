@@ -4,7 +4,7 @@ set -euo pipefail
 # Source common configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
-source "${SCRIPT_DIR}/../shared"
+source "${SCRIPT_DIR}/shared"
 
 use_sandbox_root
 print_sandbox_dir
@@ -27,76 +27,29 @@ cleanup() {
 trap cleanup INT TERM
 
 
-if [[ ! -f "${OPENCODE_PASSWORD_FILE}" || ! -f "${MISE_CONFIG_SANDBOX_FILE}" ]]; then
+if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
   echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
-  echo "Run ${SANDBOX_HOME}/bin/ocs-rebuild-container first."
+  echo "Run ocs rebuild first."
   exit 1
 fi
 
 if ! "${CONTAINER_RUNTIME}" image inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
   echo "Container image ${CONTAINER_NAME} is not available locally."
-  echo "Run ${SANDBOX_HOME}/bin/ocs-rebuild-container first."
+  echo "Run ocs rebuild first."
   exit 1
 fi
 
-echo "Starting container ${CONTAINER_NAME}..."
+# Assemble the shared run flags (workspace + state + env + mounts + add-host)
+build_run_flags
+
+echo "Starting container ${CONTAINER_NAME} (opencode web)..."
 echo ""
-
-# Build -e flags from env-passthrough.txt (format: CONTAINER_VAR=HOST_VAR, both are variable names)
-env_flags=()
-env_log=()
-ENV_PASSTHROUGH_FILE="${OPENCODE_SANDBOX_DIR}/env-passthrough.txt"
-if [[ -f "${ENV_PASSTHROUGH_FILE}" ]]; then
-  while IFS= read -r entry || [[ -n "${entry}" ]]; do
-    [[ -z "${entry}" ]] && continue
-    container_name="${entry%%=*}"
-    host_name="${entry#*=}"
-    if [[ -n "${!host_name+set}" ]]; then
-      env_flags+=(-e "${container_name}=${!host_name}")
-      env_log+=("    ${container_name} (from host \$${host_name})")
-    else
-      env_log+=("    ${container_name} (skipped — \$${host_name} not set on host)")
-    fi
-  done < "${ENV_PASSTHROUGH_FILE}"
-fi
-
-# Build --env KEY=VALUE flags for static env vars from env.txt
-ENV_STATIC_FILE="${OPENCODE_SANDBOX_DIR}/env.txt"
-if [[ -f "${ENV_STATIC_FILE}" ]]; then
-  while IFS= read -r assignment || [[ -n "${assignment}" ]]; do
-    [[ -n "${assignment}" ]] && env_flags+=(--env "${assignment}") && env_log+=("    ${assignment} (static)")
-  done < "${ENV_STATIC_FILE}"
-fi
-
-# Build -v flags for extra volume mounts from volume-mounts.txt (format: CONTAINER_DIR=HOST_DIR)
-volume_flags=()
-volume_log=()
-VOLUME_MOUNTS_FILE="${OPENCODE_SANDBOX_DIR}/volume-mounts.txt"
-if [[ -f "${VOLUME_MOUNTS_FILE}" ]]; then
-  while IFS= read -r entry || [[ -n "${entry}" ]]; do
-    [[ -z "${entry}" ]] && continue
-    container_dir="${entry%%=*}"
-    host_dir="${entry#*=}"
-    # Expand environment variables in the host path (e.g. $HOME, ${HOME})
-    host_dir="$(eval echo "${host_dir}")"
-    volume_flags+=(-v "${host_dir}:${container_dir}")
-    volume_log+=("    ${host_dir} -> ${container_dir}")
-  done < "${VOLUME_MOUNTS_FILE}"
-fi
-
-# Print full config summary before handing off to docker
-# shellcheck disable=SC2153  # PORT, LOCALHOST, and CONTAINER_NAME are defined in shared
+# shellcheck disable=SC2153  # PORT and LOCALHOST are defined in shared
 echo "   container: ${CONTAINER_NAME}"
 # shellcheck disable=SC2153
 echo "   url:       http://${LOCALHOST}:${PORT}"
-echo "   workspace: ${ROOT_DIR}"
 echo ""
-echo "   env vars:"
-if [[ "${#env_log[@]}" -gt 0 ]]; then
-  for entry in "${env_log[@]}"; do echo "${entry}"; done
-else
-  echo "    (none)"
-fi
+for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done
 echo ""
 echo "   https domains whitelisted:"
 SQUID_WHITELIST="${OPENCODE_SANDBOX_DIR}/squid-whitelist.txt"
@@ -117,67 +70,23 @@ if [[ -f "${HOST_PORTS_FILE}" ]]; then
   fi
 fi
 echo ""
-echo "   extra volume mounts:"
-if [[ "${#volume_log[@]}" -gt 0 ]]; then
-  for entry in "${volume_log[@]}"; do echo "${entry}"; done
-else
-  echo "     (none)"
+echo "   intranet endpoints:"
+INTRANET_ENDPOINTS_FILE="${OPENCODE_SANDBOX_DIR}/intranet-endpoints.txt"
+if [[ -f "${INTRANET_ENDPOINTS_FILE}" ]]; then
+  while IFS= read -r endpoint || [[ -n "${endpoint}" ]]; do
+    echo "     ${endpoint}"
+  done < "${INTRANET_ENDPOINTS_FILE}"
+  if [[ ! -s "${INTRANET_ENDPOINTS_FILE}" ]]; then
+    echo "     (none)"
+  fi
 fi
 echo ""
 echo "---"
 echo ""
 
-# Resolve --add-host flag for docker.host.
-# Docker supports the 'host-gateway' alias directly. Podman may not have a
-# bridge gateway IP available (e.g. rootless mode with slirp4netns), so the
-# host IP must be resolved explicitly from the Podman network configuration
-# or the host machine's default route.
-if [[ "${CONTAINER_RUNTIME}" == "docker" ]]; then
-  add_host_arg="--add-host=docker.host:host-gateway"
-else
-  _host_ip=""
-  # For Podman with a VM (macOS, user-mode networking via gvproxy):
-  # host.containers.internal resolves to the gvproxy special address (192.168.127.254)
-  # which forwards connections to localhost on the Mac host.
-  # 192.168.127.1 (the VM's default route) is NOT reachable — gvproxy does not
-  # proxy connections to that address.
-  if "${CONTAINER_RUNTIME}" machine inspect >/dev/null 2>&1; then
-    _host_ip="$("${CONTAINER_RUNTIME}" machine ssh \
-      "getent hosts host.containers.internal 2>/dev/null | awk '{print \$1; exit}'" 2>/dev/null)"
-  fi
-  # Fall back to the Podman bridge network gateway (non-VM / Linux hosts)
-  if [[ -z "${_host_ip}" ]]; then
-    _host_ip="$("${CONTAINER_RUNTIME}" network inspect podman 2>/dev/null \
-      | grep -oE '"gateway":[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' \
-      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
-      | head -1)"
-  fi
-  # Last resort: host machine's default route gateway
-  if [[ -z "${_host_ip}" ]]; then
-    if command -v ip >/dev/null 2>&1; then
-      _host_ip="$(ip -4 route show default 2>/dev/null | awk 'NR==1{print $3}')"
-    elif command -v route >/dev/null 2>&1; then
-      _host_ip="$(route -n get default 2>/dev/null | awk '/gateway:/{print $2}')"
-    fi
-  fi
-  if [[ -n "${_host_ip}" ]]; then
-    add_host_arg="--add-host=docker.host:${_host_ip}"
-  else
-    echo "WARNING: Could not determine host gateway IP for Podman." >&2
-    echo "         docker.host will not be resolvable inside the container." >&2
-    add_host_arg=""
-  fi
-fi
-
-"${CONTAINER_RUNTIME}" run --rm --init -it --cap-add NET_ADMIN \
-  ${add_host_arg:+"${add_host_arg}"} \
+"${CONTAINER_RUNTIME}" run --rm --init -it \
   --name "${CONTAINER_NAME}" \
   -e "OPENCODE_PORT=${PORT}" \
   -p "${LOCALHOST}:${PORT}:${PORT}" \
-  -v "${ROOT_DIR}:${ROOT_DIR}" \
-  -v "${OPENCODE_STATE_DIR}:/home/dev/.local/share/opencode" \
-  "${volume_flags[@]+"${volume_flags[@]}"}" \
-  "${env_flags[@]+"${env_flags[@]}"}" \
+  "${RUN_FLAGS[@]}" \
   "${CONTAINER_NAME}"
-
-

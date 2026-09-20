@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ocs-clean — nuclear per-project cleanup.
+#
+# Removes EVERYTHING this project created on this host, but leaves the
+# project's source files (config/, prompt.md, app/, data/, etc.) untouched:
+#
+#   ocs clean <name>
+#
+# What it removes (idempotent, exit 0 every time):
+#   1. All containers of this project (running AND stopped) —
+#      ocs-<SANDBOX_ID> and any -run-$$ / -tui-$$ / -test-$$ suffixes
+#   2. Both images of this project —
+#      ocs-<SANDBOX_ID>          (working: minimal / full profile)
+#      ocs-<SANDBOX_ID>-test    (reserved test profile)
+#      (the legacy opencode-sandbox-<SANDBOX_ID> variants are matched too)
+#   3. The dedicated Docker network — ocs-net-<SANDBOX_ID>
+#      (the legacy opencode-sandbox-net-<SANDBOX_ID> is removed too)
+#   4. Both on-disk trees inside the project —
+#      <project>/.sandbox/build/   (disposable; the next ocs rebuild regenerates it)
+#      <project>/.sandbox/state/   (opencode session + sandbox-network-map)
+#
+# What it does NOT touch:
+#   - The project's source files (config/, prompt.md, app/, data/, etc.)
+#   - Any other project's containers, images, networks, or on-disk state
+#
+# Distinct from `ocs kill`:
+#   - ocs clean <name>   per-project, nuclear (containers + images + network + on-disk state)
+#   - ocs kill           cross-project, optional name filter; removes containers, images,
+#                        and networks (with --purge / --state also the on-disk trees)
+#
+# After a successful `ocs clean`, the project is back to "never been built on this
+# host". `ocs rebuild <name>` will regenerate the image and `ocs start <name>`
+# (or `ocs tui` / `ocs run`) will bring the sandbox back up — no other steps needed.
+
+# Source common configuration
+# Resolve paths without the side-effect of mkdir -p'ing the state dirs: a
+# cleanup pass must not re-create what it is about to remove.
+# Set BEFORE sourcing shared so the top-level refresh_root_paths call in
+# shared (line ~161) is already under the guard.
+export OPENCODE_SANDBOX_NO_MKDIR=1
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/shared"
+
+use_sandbox_root
+print_sandbox_dir
+
+# --- Resolve the regexes / names -----------------------------------------
+# Every runtime artifact of this project shares the same prefix
+# `ocs-<SANDBOX_ID>` (or the legacy `opencode-sandbox-<SANDBOX_ID>` scheme).
+# We match both so a clean also removes objects created by an older build, and
+# the per-project path hash in SANDBOX_ID keeps us scoped to exactly this
+# project.
+ID_NEW="ocs-${SANDBOX_ID}"
+ID_OLD="opencode-sandbox-${SANDBOX_ID}"
+NET_NEW="ocs-net-${SANDBOX_ID}"
+NET_OLD="opencode-sandbox-net-${SANDBOX_ID}"
+
+removed_containers=0
+removed_images=0
+removed_networks=0
+removed_dirtrees=0
+
+echo "Cleaning up every artifact for sandbox ${SANDBOX_ID} ..."
+echo ""
+
+# --- 1) Containers (running and stopped) -----------------------------------
+# `docker ps -a` enumerates both states; `rm -f` is idempotent and will
+# detach the container from its network so step 3 can succeed.
+# Match both the new (ocs-) and legacy (opencode-sandbox-) naming schemes.
+while IFS= read -r c; do
+  [[ -z "${c}" ]] && continue
+  if [[ "${c}" =~ ^${ID_NEW} ]] || [[ "${c}" =~ ^${ID_OLD} ]]; then
+    if "${CONTAINER_RUNTIME}" rm -f "${c}" >/dev/null 2>&1; then
+      echo "  removed container: ${c}"
+      removed_containers=$((removed_containers + 1))
+    fi
+  fi
+done < <("${CONTAINER_RUNTIME}" ps -a --format '{{.Names}}' 2>/dev/null)
+
+# --- 2) Images (working + test) --------------------------------------------
+while IFS= read -r image; do
+  [[ -z "${image}" ]] && continue
+  if [[ "${image}" =~ ^${ID_NEW} ]] || [[ "${image}" =~ ^${ID_OLD} ]]; then
+    if "${CONTAINER_RUNTIME}" rmi -f "${image}" >/dev/null 2>&1; then
+      echo "  removed image:     ${image}"
+      removed_images=$((removed_images + 1))
+    fi
+  fi
+done < <("${CONTAINER_RUNTIME}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+
+# --- 3) Dedicated Docker network (new + legacy names) ----------------------
+# The per-sandbox subnet assignment (sandbox-network-map) is re-created on
+# demand by `ensure_sandbox_network()` in shared, so a removed network is
+# safe to lose.
+for NET_NAME in "${NET_NEW}" "${NET_OLD}"; do
+  if "${CONTAINER_RUNTIME}" network inspect "${NET_NAME}" >/dev/null 2>&1; then
+    if "${CONTAINER_RUNTIME}" network rm "${NET_NAME}" >/dev/null 2>&1; then
+      echo "  removed network:   ${NET_NAME}"
+      removed_networks=$((removed_networks + 1))
+    fi
+  fi
+done
+
+# --- 4) On-disk state trees (build + state) ---------------------------------
+# Both are under ROOT_DIR by construction (see bin/shared). We still guard so
+# we never `rm -rf` an arbitrary out-of-project path.
+for D in "${SANDBOX_BUILD_DIR}" "${SANDBOX_STATE_BASE}"; do
+  [[ -z "${D}" || ! -d "${D}" ]] && continue
+  case "${D}" in
+    "${ROOT_DIR}"|"${ROOT_DIR}"/*) ;;
+    *)
+      echo "  SKIPPED (not under project root ${ROOT_DIR}): ${D}" >&2
+      continue
+      ;;
+  esac
+  if rm -rf -- "${D}"; then
+    echo "  removed dir:       ${D}"
+    removed_dirtrees=$((removed_dirtrees + 1))
+  fi
+done
+
+# --- Summary ---------------------------------------------------------------
+total=$((removed_containers + removed_images + removed_networks + removed_dirtrees))
+echo ""
+if [[ ${total} -eq 0 ]]; then
+  echo "nothing to clean for ${SANDBOX_ID} (already clean)"
+else
+  echo "cleaned ${total} artifact(s) for ${SANDBOX_ID}:"
+  printf '  %d container(s), %d image(s), %d network(s), %d on-disk dir(s)\n' \
+    "${removed_containers}" "${removed_images}" "${removed_networks}" "${removed_dirtrees}"
+  echo "the project's source files are untouched."
+  echo "Next: ocs rebuild <name>   # to restore the sandbox"
+fi

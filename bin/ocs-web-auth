@@ -4,10 +4,16 @@ set -euo pipefail
 # Source common configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
-source "${SCRIPT_DIR}/../shared"
+source "${SCRIPT_DIR}/shared"
 
 use_sandbox_root
 print_sandbox_dir
+
+if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
+  echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
+  echo "Run ocs rebuild first."
+  exit 1
+fi
 
 
 OPENCODE_SERVER_PASSWORD="$(cat "${OPENCODE_PASSWORD_FILE}")"

@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Source common configuration
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/shared"
+
+use_sandbox_root
+print_sandbox_dir
+
+# The test suite lives in the sandbox repository (next to `ocs`, `bin/`, `config/`),
+# not in a project. It must be readable inside the container, so we mount ONLY
+# the test/ directory read-only — never the whole repo/project (which would
+# expose .sandbox/ and the project's other files). Cases reference each other
+# by the SANDBOX_HOME-relative path they are invoked at.
+CASES_HOST_DIR="${SANDBOX_HOME}/test/cases"
+if [[ ! -d "${CASES_HOST_DIR}" ]]; then
+  echo "No test cases found at ${CASES_HOST_DIR}." >&2
+  exit 1
+fi
+EXTRA_TEST_MOUNTS=(
+  -v "${SANDBOX_HOME}/test:${SANDBOX_HOME}/test:ro"
+)
+
+# No long-running container is assumed: ocs-test starts its own one-shot
+# sandbox container, probes it, then removes it again. The container runs the
+# same entrypoint (squid + firewall active) but with OPCODE_CMD='sleep
+# infinity' so no opencode server is started.
+#
+# Image: ocs-test always builds/uses a SEPARATE image tagged
+# `<CONTAINER_NAME>-test` from `Dockerfile.test` so it never clobbers the
+# project's working image (which may be built from Dockerfile.full or
+# Dockerfile.minimal). If the test image is not present locally, ocs-test
+# rebuilds it via `ocs-rebuild-container` with `OPENCODE_DOCKERFILE_OVERRIDE=test`.
+
+TEST_IMAGE="${CONTAINER_NAME}-test"
+if ! "${CONTAINER_RUNTIME}" image inspect "${TEST_IMAGE}" >/dev/null 2>&1; then
+  echo "Building test image (Dockerfile.test) — this may take a moment ..."
+  if ! env OPENCODE_DOCKERFILE_OVERRIDE=test "${SCRIPT_DIR}/ocs-rebuild-container"; then
+    echo "ERROR: failed to build test image '${TEST_IMAGE}'." >&2
+    exit 1
+  fi
+fi
+
+if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
+  echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
+  echo "Run ocs rebuild first (for the working image; the test image is rebuilt automatically)."
+  exit 1
+fi
+
+TEST_CONTAINER="${CONTAINER_NAME}-test-$$"
+
+build_run_flags
+
+trap 'echo; "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true' EXIT
+
+CIDR="$(tr -d '[:space:]' < "${SANDBOX_CIDR_FILE}" 2>/dev/null || echo 10.77.0.0/16)"
+"${CONTAINER_RUNTIME}" run -d --init \
+  --name "${TEST_CONTAINER}" \
+  -w /workspace \
+  -e "OPCODE_CMD=sleep infinity" \
+  -e "SANDBOX_NETWORK_CIDR=${CIDR}" \
+  "${EXTRA_TEST_MOUNTS[@]}" \
+  "${RUN_FLAGS[@]}" \
+  "${TEST_IMAGE}"
+
+echo "Started test container ${TEST_CONTAINER}"
+echo "Running security test cases ..."
+echo ""
+
+pass_count=0
+fail_count=0
+skip_count=0
+declare -a failed_cases=()
+
+for case_file in "${CASES_HOST_DIR}"/*.sh; do
+  case_name="$(basename "${case_file}" .sh)"
+  echo "=== ${case_name} ==="
+
+  # shellcheck disable=SC2153  # CONTAINER_RUNTIME and ROOT_DIR are defined in shared
+  # Run as the 'dev' user — the same privileges the AI agent (opencode) has
+  # when it spawns bash. Testing as root would bypass the containment we check.
+  set +e
+  output="$("${CONTAINER_RUNTIME}" exec \
+    -u dev \
+    -w /workspace \
+    "${TEST_CONTAINER}" \
+    bash "${SANDBOX_HOME}/test/cases/${case_name}.sh" 2>&1)"
+  rc=$?
+  set -e
+
+  echo "${output}"
+
+  if [[ ${rc} -eq 0 ]]; then
+    if grep -qE '^SKIP:' <<< "${output}"; then
+      skip_count=$((skip_count + 1))
+    else
+      pass_count=$((pass_count + 1))
+    fi
+  else
+    fail_count=$((fail_count + 1))
+    failed_cases+=("${case_name}")
+  fi
+  echo ""
+done
+
+echo "================================"
+echo "summary: ${pass_count} passed, ${fail_count} failed, ${skip_count} skipped"
+if [[ ${fail_count} -gt 0 ]]; then
+  echo "failed cases: ${failed_cases[*]}"
+  echo "A security check failed - removing the test image so only known-good builds are used."
+  echo "      (inspect the case output above for escape evidence)"
+  trap - EXIT
+  "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true
+  echo "      removed image: ${TEST_IMAGE}"
+  exit 1
+fi
+trap - EXIT
+"${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true
+"${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true
+echo "all security checks passed"

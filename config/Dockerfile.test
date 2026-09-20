@@ -1,0 +1,96 @@
+# ==========================================================================
+# Dockerfile.test — image exclusively for `ocs test`.
+#
+# Not selectable by a project: `ocs init` / `ocs rebuild` refuse the
+# `test` profile. The `ocs test` command builds this image under a
+# separate tag (`ocs-<SANDBOX_ID>-test`) so it never clobbers
+# the project's working image.
+#
+# Contains the full network-analysis toolbox the red-team and the host
+# cases need:
+#   - nmap, tcpdump, iputils-ping, netcat, dnsutils, whois, traceroute,
+#     mtr, net-tools (ifconfig/route legacy)
+#   - python3 + jq  (cases 03/08/09 parse JSON / IP math)
+#   - everything the harness needs (squid, iptables, gosu, opencode)
+# ==========================================================================
+
+FROM python:3.13-slim-bookworm
+
+ARG USER_ID
+ARG GROUP_ID
+ARG WORKSPACE_DIR=/workspace
+
+ENV WORKSPACE_DIR=${WORKSPACE_DIR} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# --- OS packages -----------------------------------------------------------
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        ca-certificates \
+        git \
+        xdg-utils \
+        gosu \
+        procps \
+        # --- sandbox harness ---
+        squid \
+        iptables \
+        # --- network analysis (for ocs test red-team) ---
+        iproute2 \
+        net-tools \
+        iputils-ping \
+        netcat-openbsd \
+        dnsutils \
+        whois \
+        traceroute \
+        mtr-tiny \
+        nmap \
+        tcpdump \
+        # --- scripting / parsing for the test cases ---
+        jq \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- user / group ----------------------------------------------------------
+RUN if ! getent group ${GROUP_ID} > /dev/null 2>&1; then groupadd -g ${GROUP_ID} dev; fi
+RUN if ! getent passwd ${USER_ID} > /dev/null 2>&1; then \
+    useradd -m -l -u ${USER_ID} -g ${GROUP_ID} --shell /bin/bash dev; \
+fi
+
+# --- workspace + user dirs ---------------------------------------------------
+# /etc/opencode — ro mount point for config/opencode.jsonc (opencode reads it,
+# cannot rewrite it).
+RUN mkdir -p /etc/opencode
+RUN mkdir -p "${WORKSPACE_DIR}" /home/dev/.local /home/dev/.config /home/dev/.cache \
+    && chown -R "${USER_ID}:${GROUP_ID}" "${WORKSPACE_DIR}" /home/dev/.local /home/dev/.config /home/dev/.cache
+
+# --- opencode CLI ------------------------------------------------------------
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path \
+    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && chown "${USER_ID}:${GROUP_ID}" /usr/local/bin/opencode \
+    && chmod a+rx /usr/local/bin/opencode
+
+# --- headless xdg-open stub --------------------------------------------------
+RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
+    && chmod +x /usr/local/bin/xdg-open
+
+# --- squid proxy configuration ----------------------------------------------
+COPY squid.conf /etc/squid/squid.conf
+COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
+
+# --- firewall configuration ---------------------------------------------------
+COPY host-ports.txt /etc/host-ports.txt
+COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
+
+# --- opencode password + entrypoint ------------------------------------------
+COPY opencode-password /opencode-password
+COPY entrypoint.sh /entrypoint.sh
+RUN chown root:root /opencode-password \
+    && chmod 600 /opencode-password \
+    && chmod +x /entrypoint.sh
+
+WORKDIR ${WORKSPACE_DIR}
+ENTRYPOINT ["/entrypoint.sh"]

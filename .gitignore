@@ -1,5 +1,9 @@
 .idea
-.opencode-sandbox
+.sandbox
 .env
 *.env
 *.env.*
+
+# Sandbox projects (created by 'ocs init' under ./sandboxes/) are local and
+# ignored — new projects are not committed to the repo by default.
+sandboxes/*

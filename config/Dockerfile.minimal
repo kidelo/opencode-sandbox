@@ -1,0 +1,103 @@
+# ==========================================================================
+# Dockerfile.minimal — harness-only sandbox image.
+#
+# What it gives you:
+#   - The opencode-sandbox skeleton (squid egress proxy + iptables firewall
+#     + gosu privilege drop + the opencode CLI)
+#   - python3 (Debian's own; NO pip packages — the agent has its own runtime)
+#   - /dev user, $WORKSPACE_DIR, /home/dev/.{local,config,cache}
+#   - The headless xdg-open stub
+#
+# What it does NOT give you:
+#   - no npm/pnpm/uv toolchain (use a different profile for that)
+#   - no office/PDF/OCR/science/geo/ML libs
+#   - no sudo, no docker, no wireshark, no large CLI suites
+#
+# Use it when: you want the smallest possible attack surface for a project
+# that doesn't need the full toolchain. It is the DEFAULT profile (when a
+# project's config does not set `dockerfile:`, ocs rebuild uses this one).
+# ==========================================================================
+
+FROM python:3.13-slim-bookworm
+
+ARG USER_ID
+ARG GROUP_ID
+ARG WORKSPACE_DIR=/workspace
+
+ENV WORKSPACE_DIR=${WORKSPACE_DIR} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# --- OS packages -----------------------------------------------------------
+# Only the bare minimum the sandbox harness needs. python is already in the
+# base image (python:3.13-slim-bookworm); we add nothing on top of it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        ca-certificates \
+        git \
+        xdg-utils \
+        gosu \
+        procps \
+        squid \
+        iptables \
+        iproute2 \
+        iputils-ping \
+        netcat-openbsd \
+        dnsutils \
+        whois \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- user / group ----------------------------------------------------------
+RUN if ! getent group ${GROUP_ID} > /dev/null 2>&1; then \
+    groupadd -g ${GROUP_ID} dev; \
+fi
+RUN if ! getent passwd ${USER_ID} > /dev/null 2>&1; then \
+    useradd -m -l -u ${USER_ID} -g ${GROUP_ID} --shell /bin/bash dev; \
+fi
+
+# --- workspace + user dirs ---------------------------------------------------
+# /etc/opencode is the mount point for config/opencode.jsonc (bound read-only
+# at run time; opencode reads it via $OPENCODE_CONFIG but cannot rewrite it).
+RUN mkdir -p /etc/opencode
+RUN mkdir -p \
+        "${WORKSPACE_DIR}" \
+        /home/dev/.local \
+        /home/dev/.config \
+        /home/dev/.cache \
+    && chown -R "${USER_ID}:${GROUP_ID}" \
+        "${WORKSPACE_DIR}" /home/dev/.local /home/dev/.config /home/dev/.cache
+
+# --- opencode CLI ------------------------------------------------------------
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path \
+    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && chown "${USER_ID}:${GROUP_ID}" /usr/local/bin/opencode \
+    && chmod a+rx /usr/local/bin/opencode
+
+# --- headless xdg-open stub --------------------------------------------------
+RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
+    && chmod +x /usr/local/bin/xdg-open
+
+# --- squid proxy configuration ----------------------------------------------
+COPY squid.conf /etc/squid/squid.conf
+COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
+
+# --- firewall configuration ---------------------------------------------------
+COPY host-ports.txt /etc/host-ports.txt
+COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
+
+# --- opencode password + entrypoint ------------------------------------------
+COPY opencode-password /opencode-password
+COPY entrypoint.sh /entrypoint.sh
+# The entrypoint (root) is the sole reader — it seeds OPENCODE_SERVER_PASSWORD;
+# gosu passes that to dev as env. dev never reads the file. Keep it root 0600
+# so the container does not require the DAC_OVERRIDE capability.
+RUN chown root:root /opencode-password \
+    && chmod 600 /opencode-password \
+    && chmod +x /entrypoint.sh
+
+WORKDIR ${WORKSPACE_DIR}
+ENTRYPOINT ["/entrypoint.sh"]

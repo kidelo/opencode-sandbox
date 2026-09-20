@@ -4,13 +4,14 @@ set -euo pipefail
 # Source common configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
-source "${SCRIPT_DIR}/../shared"
+source "${SCRIPT_DIR}/shared"
 
 print_sandbox_dir
 
 GROUP_ID="$(id -g)"
 USER_ID="$(id -u)"
-# WORKSPACE_DIR inside the container matches the full project root path
+# WORKSPACE_DIR inside the container is the fixed path /workspace (set by each
+# profile's ENV); the project's workspace dir is mounted there at run time.
 # Generate a 48-character random hexadecimal password from /dev/urandom (od reads 24 bytes, converts to 48 hex chars)
 OPENCODE_PASSWORD="$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')"
 
@@ -21,40 +22,46 @@ chmod u=rwx,go= "${OPENCODE_SANDBOX_DIR}"
 mkdir -p "${OPENCODE_STATE_DIR}"
 chmod u=rwx,go= "${OPENCODE_STATE_DIR}"
 
+# Ensure the workspace (single rw dir) exists so a run/`ocs start` can mount it.
+if [[ -n "${SANDBOX_WORKSPACE_DIR:-}" && ! -d "${SANDBOX_WORKSPACE_DIR}" ]]; then
+  mkdir -p "${SANDBOX_WORKSPACE_DIR}"
+  chmod u=rwx,go= "${SANDBOX_WORKSPACE_DIR}"
+fi
+
 echo "Container name: ${CONTAINER_NAME}"
 
 printf '%s\n' "${OPENCODE_PASSWORD}" > "${OPENCODE_PASSWORD_FILE}"
 chmod u=rw,go= "${OPENCODE_PASSWORD_FILE}"
 echo "Generated OpenCode password and saved it to ${OPENCODE_PASSWORD_FILE}"
 
-echo "Copying MISE config from ${MISE_CONFIG_ROOT_FILE} ..."
-cp "${MISE_CONFIG_ROOT_FILE}" "${MISE_CONFIG_SANDBOX_FILE}"
-
 echo "Copying entrypoint script ..."
-cp "${SANDBOX_HOME}/entrypoint.sh" "${OPENCODE_SANDBOX_DIR}/entrypoint.sh"
+cp "${SANDBOX_HOME}/docker/entrypoint.sh" "${OPENCODE_SANDBOX_DIR}/entrypoint.sh"
 
 echo "Copying squid configuration ..."
-cp "${SANDBOX_HOME}/squid.conf" "${OPENCODE_SANDBOX_DIR}/squid.conf"
+cp "${SANDBOX_HOME}/docker/squid.conf" "${OPENCODE_SANDBOX_DIR}/squid.conf"
 
 echo "Processing sandbox configuration ..."
 if [[ -f "${CONFIG_FILE}" ]]; then
   SQUID_WHITELIST="${OPENCODE_SANDBOX_DIR}/squid-whitelist.txt"
   HOST_PORTS="${OPENCODE_SANDBOX_DIR}/host-ports.txt"
+  INTRANET_ENDPOINTS="${OPENCODE_SANDBOX_DIR}/intranet-endpoints.txt"
   ENV_PASSTHROUGH="${OPENCODE_SANDBOX_DIR}/env-passthrough.txt"
   ENV_STATIC="${OPENCODE_SANDBOX_DIR}/env.txt"
   VOLUME_MOUNTS="${OPENCODE_SANDBOX_DIR}/volume-mounts.txt"
   true > "${SQUID_WHITELIST}"
   true > "${HOST_PORTS}"
+  true > "${INTRANET_ENDPOINTS}"
   true > "${ENV_PASSTHROUGH}"
   true > "${ENV_STATIC}"
   true > "${VOLUME_MOUNTS}"
 
-  # ---------------------------------------------------------------------------
-  # Scalar flags — top-level "key: value" entries (not sections).
-  # Add new top-level scalars here; their values are set during the parse loop.
-  # ---------------------------------------------------------------------------
-  cfg_docker_in_docker="false"
-  cfg_opencode_port="4096"
+   # ---------------------------------------------------------------------------
+   # Scalar flags — top-level "key: value" entries (not sections).
+   # Add new top-level scalars here; their values are set during the parse loop.
+   # ---------------------------------------------------------------------------
+    cfg_opencode_port="4096"
+    cfg_sandbox_network_cidr="10.77.0.0/16"
+    cfg_dockerfile="minimal"
 
   section=""
   while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -70,18 +77,19 @@ if [[ -f "${CONFIG_FILE}" ]]; then
       top_value="${top_value%%#*}"
       top_value="${top_value%"${top_value##*[! ]}"}"
 
-      if [[ -z "${top_value}" ]]; then
-        # No value — this is a section header
-        section="${top_key}"
-      else
-        # Has a value — top-level scalar; clear section context
-        section=""
-        case "${top_key}" in
-          docker-in-docker) cfg_docker_in_docker="${top_value}" ;;
-          opencode-port)     cfg_opencode_port="${top_value}" ;;
-          # sandbox-name is handled by shared; other top-level scalars (e.g. sandbox-name) are intentionally ignored here
-        esac
-      fi
+       if [[ -z "${top_value}" ]]; then
+         # No value — this is a section header
+         section="${top_key}"
+       else
+         # Has a value — top-level scalar; clear section context
+         section=""
+            case "${top_key}" in
+              opencode-port)            cfg_opencode_port="${top_value}" ;;
+              sandbox-network-cidr)     cfg_sandbox_network_cidr="${top_value}" ;;
+              dockerfile)               cfg_dockerfile="${top_value}" ;;
+              # sandbox-name and workspace are handled by shared
+            esac
+       fi
       continue
     fi
 
@@ -91,6 +99,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
       case "${section}" in
         http-domain-whitelist) echo "${value}" >> "${SQUID_WHITELIST}" ;;
         host-ports)            echo "${value}" >> "${HOST_PORTS}" ;;
+        intranet-endpoints)    echo "${value}" >> "${INTRANET_ENDPOINTS}" ;;
       esac
       continue
     fi
@@ -119,36 +128,84 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   printf '%s\n' "${cfg_opencode_port}" > "${OPENCODE_PORT_FILE}"
   PORT="${cfg_opencode_port}"
 
-  if [[ "${cfg_docker_in_docker}" == "true" ]]; then
-    echo "/var/run/docker.sock=/var/run/docker.sock" >> "${VOLUME_MOUNTS}"
-    echo "  docker-in-docker: enabled — docker socket mount injected"
+  # Dedicated container network range (all sandboxes on this host share the
+  # range; each sandbox gets its own /24 inside it, assigned by shared).
+  CIDR_FILE="${OPENCODE_SANDBOX_DIR}/sandbox-network-cidr.txt"
+  if ! [[ "${cfg_sandbox_network_cidr}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]; then
+    echo "ERROR: 'sandbox-network-cidr' must be an IPv4 CIDR (e.g. 10.77.0.0/16); got '${cfg_sandbox_network_cidr}'." >&2
+    exit 1
   fi
+  printf '%s\n' "${cfg_sandbox_network_cidr}" > "${CIDR_FILE}"
+
+  # Validate intranet endpoints: strict "ipv4:port" form
+  while IFS= read -r endpoint || [[ -n "${endpoint}" ]]; do
+    [[ -z "${endpoint}" ]] && continue
+    if [[ ! "${endpoint}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}:[1-9][0-9]*$ ]]; then
+      echo "ERROR: intranet-endpoints entry '${endpoint}' is not a valid 'ipv4:port' (e.g. 10.0.0.5:3306)." >&2
+      exit 1
+    fi
+    end_port="${endpoint##*:}"
+    if (( ${#end_port} > 5 )) || (( end_port > 65535 )); then
+      echo "ERROR: intranet-endpoints entry '${endpoint}' has an invalid port (must be 1-65535)." >&2
+      exit 1
+    fi
+  done < "${INTRANET_ENDPOINTS}"
 
   echo "  Extracted $(wc -l < "${SQUID_WHITELIST}") whitelisted domain(s) into squid-whitelist.txt"
   echo "  Extracted $(wc -l < "${HOST_PORTS}") host TCP port(s) into host-ports.txt"
+  echo "  Extracted $(wc -l < "${INTRANET_ENDPOINTS}") intranet endpoint(s) into intranet-endpoints.txt"
   echo "  Extracted $(wc -l < "${ENV_PASSTHROUGH}") env var name(s) into env-passthrough.txt"
   echo "  Extracted $(wc -l < "${ENV_STATIC}") static env var(s) into env.txt"
   echo "  Extracted $(wc -l < "${VOLUME_MOUNTS}") volume mount(s) into volume-mounts.txt"
-  echo "  OpenCode HTTP port: ${PORT}"
+    echo "  OpenCode HTTP port: ${PORT}"
+   echo "  Sandbox network range: ${cfg_sandbox_network_cidr} (each sandbox gets its own /24)"
+  echo "  Workspace (single rw dir -> /workspace): ${SANDBOX_WORKSPACE_DIR:-${ROOT_DIR}/workspace}"
 else
   echo "  Missing required config file: ${CONFIG_FILE}" >&2
   echo "  Create opencode-sandbox-config.yaml (use ocs-init template) and rebuild." >&2
   exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Resolve the Docker image profile (`dockerfile:` key in the project config,
+# or $OPENCODE_DOCKERFILE_OVERRIDE for programmatic use — `ocs test` uses this
+# to force the `test` profile without touching the project's config).
+#
+# Convention: every profile lives at `config/Dockerfile.<name>` and is
+# selectable by a project. The `test` profile is reserved for `ocs test` and
+# is built under a separate image tag so it never clobbers the working image.
+# ---------------------------------------------------------------------------
+DOCKERFILE_NAME="${OPENCODE_DOCKERFILE_OVERRIDE:-${cfg_dockerfile}}"
+DOCKERFILE_PATH="${SANDBOX_HOME}/config/Dockerfile.${DOCKERFILE_NAME}"
+if [[ ! -f "${DOCKERFILE_PATH}" ]]; then
+  echo "ERROR: 'dockerfile: ${DOCKERFILE_NAME}' does not resolve to an existing file." >&2
+  echo "  Looked for: ${DOCKERFILE_PATH}" >&2
+  echo "  Available profiles:" >&2
+  for f in "${SANDBOX_HOME}/config/Dockerfile".*; do
+    [[ -f "${f}" ]] || continue
+    printf '    - %s\n' "$(basename "${f#"${SANDBOX_HOME}"}")" >&2
+  done
+  exit 1
+fi
+printf '%s\n' "${DOCKERFILE_NAME}" > "${OPENCODE_SANDBOX_DIR}/dockerfile-name"
 
+# The `test` profile builds a separate image (so the project's working image
+# is left untouched and `ocs test` never "downgrades" it).
+BUILD_IMAGE_TAG="${CONTAINER_NAME}"
+if [[ "${DOCKERFILE_NAME}" == "test" ]]; then
+  BUILD_IMAGE_TAG="${CONTAINER_NAME}-test"
+fi
 
-echo "Building Container Image '${CONTAINER_NAME}' (USER_ID=${USER_ID} GROUP_ID=${GROUP_ID})..."
+echo "Building Container Image '${BUILD_IMAGE_TAG}' from Dockerfile.${DOCKERFILE_NAME} (USER_ID=${USER_ID} GROUP_ID=${GROUP_ID})..."
 BUILD_LOG="${OPENCODE_SANDBOX_DIR}/docker-build.log"
 
 if "${CONTAINER_RUNTIME}" build \
   --build-arg "USER_ID=${USER_ID}" \
   --build-arg "GROUP_ID=${GROUP_ID}" \
-  --build-arg "WORKSPACE_DIR=${ROOT_DIR}" \
-  -t "${CONTAINER_NAME}" \
-  -f "${SANDBOX_HOME}/Dockerfile" \
+  -t "${BUILD_IMAGE_TAG}" \
+  -f "${DOCKERFILE_PATH}" \
   "${OPENCODE_SANDBOX_DIR}" > "${BUILD_LOG}" 2>&1; then
-  echo "✓ Container image '${CONTAINER_NAME}' built successfully"
+  echo "✓ Container image '${BUILD_IMAGE_TAG}' built successfully (profile: ${DOCKERFILE_NAME})"
 else
   echo "✗ Container build failed. Output:"
   cat "${BUILD_LOG}"

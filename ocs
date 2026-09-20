@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ocs — single entry point for opencode-sandbox.
+#
+# Address sandboxes by name — no need to cd into the project first:
+#
+#   ocs init <name>          Create a new sandbox project at ./sandboxes/<name>/
+#   ocs rebuild <name>       Build the container image for <name>
+#   ocs start <name>         Web container (one-shot, Ctrl-C stops)
+#   ocs tui <name>           Interactive TUI session (one-shot)
+#   ocs run <name> <prompt> [args]   One-shot 'opencode run' (prompt file or inline string)
+#   ocs web <name>           Web UI mode
+#   ocs web-auth <name>      Web URL with basic-auth credentials
+#   ocs terminal <name>      Debug shell in a one-shot container
+#   ocs test <name>          Security suite (own one-shot container)
+#   ocs list                 List sandbox projects
+#   ocs clean [name]         Nuclear per-project cleanup (containers + images + network + state)
+#   ocs clear [name]         Alias for 'ocs clean'
+#   ocs kill [filter]        Remove sandbox containers, images, networks (all projects or filter)
+#   ocs help                 Show this help
+#
+# ocs init is scriptable (no prompts):
+#   ocs init -y <name>                     # accept all defaults
+#   ocs init -y --dockerfile full <name>   # pick a profile
+#   ocs init -y --no-build <name>          # skip the initial build
+
+# If no <name> is given, the project of the current directory is used when it
+# is (inside) a sandbox project.
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+BIN_DIR="${SCRIPT_DIR}/bin"
+# shellcheck source=bin/shared
+source "${BIN_DIR}/shared"
+
+usage() {
+  cat <<'EOF'
+usage: ocs <command> [project] [args...]
+
+commands:
+  init <name> [-y] [--dockerfile <p>] [--no-build]
+                         Create a new sandbox project at ./sandboxes/<name>
+                         (-y: accept all defaults, no prompts;
+                          --dockerfile: image profile; --no-build: skip build)
+  rebuild <name>   Build the container image for <name>
+  start <name>     Start the one-shot web container (Ctrl+C stops and removes it)
+  tui <name>       Interactive OpenCode TUI (one-shot)
+  run <name> <prompt> [args]   One-shot opencode run; <prompt> is a prompt
+                       file (md) or an inline prompt string
+  web <name>       Web UI mode
+  web-auth <name>  Print the web URL with basic-auth credentials
+  terminal <name>  Open a shell in a one-shot sandbox container (debug)
+  test <name>      Run the security test suite (starts its own one-shot container)
+  list             List sandbox projects (./sandboxes/)
+  clean <name>     Nuclear per-project cleanup: containers + images + network + on-disk state
+  clear <name>     Alias for 'clean'
+  kill [filter]    Remove sandbox containers, images, and networks (all projects or by name)
+  help             Show this help
+
+project is required for most commands; without a name the sandbox project of
+the current directory is used.
+EOF
+}
+
+# resolve_project <explicit-name> [<cmd>]
+# Prints the sandbox project dir on stdout.
+resolve_project() {
+  local name="${1:-}" cmd="${2:-}" proj_dir=""
+  if [[ -n "${name}" ]]; then
+    if [[ ! "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+      echo "ocs: invalid project name '${name}' (lowercase letters, digits, hyphens)." >&2
+      return 1
+    fi
+    proj_dir="${SANDBOXES_BASE}/${name}"
+    if [[ ! -f "${proj_dir}/config/opencode-sandbox-config.yaml" ]]; then
+      echo "ocs: project '${name}' not found in ${SANDBOXES_BASE}." >&2
+      echo "ocs: available projects:" >&2
+      list_projects >&2 || true
+      return 1
+    fi
+    printf '%s\n' "${proj_dir}"
+    return 0
+  fi
+  # No explicit name — fall back to the sandbox project of the current dir.
+  proj_dir="$(find_sandbox_root 2>/dev/null || true)"
+  if [[ -n "${proj_dir}" && -d "${proj_dir}" ]]; then
+    printf '%s\n' "${proj_dir}"
+    return 0
+  fi
+  echo "ocs: no project name given and the current directory is not inside a sandbox project." >&2
+  echo "ocs: usage: ocs ${cmd} <name>   (see: ocs list)" >&2
+  list_projects >&2 || true
+  return 1
+}
+
+list_projects() {
+  local d
+  echo "" >&2
+  if [[ -d "${SANDBOXES_BASE}" ]]; then
+    for d in "${SANDBOXES_BASE}"/*/; do
+      [[ -d "${d}" ]] || continue
+      local base
+      base="$(basename "${d}")"
+      if [[ -f "${d%/}/config/opencode-sandbox-config.yaml" ]]; then
+        printf '  %s\n' "${base}" >&2
+      fi
+    done
+  fi
+}
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "${cmd}" in
+  -h|--help|help)
+    usage
+    ;;
+  init)
+    exec "${BIN_DIR}/ocs-init" "$@"
+    ;;
+  list|projects)
+    for d in "${SANDBOXES_BASE}"/*/; do
+      [[ -d "${d}" ]] || continue
+      if [[ -f "${d%/}/config/opencode-sandbox-config.yaml" ]]; then
+        printf '%s\n' "$(basename "${d}")"
+      fi
+    done
+    ;;
+  kill)
+    exec "${BIN_DIR}/ocs-kill" "$@"
+    ;;
+  run)
+    # ocs run [name] <prompt>
+    # <prompt> is a prompt file (md) or an inline prompt string.
+    # If the first argument is a *known* sandbox project, it is the name and the
+    # prompt is the next argument(s). Otherwise the first argument is the prompt
+    # (file or inline) and the project is resolved from the current directory —
+    # the self-hosted pattern: run from inside a sandbox project, e.g.
+    #   ocs run "summarise this repo"          # from inside a project
+    #   ocs run my-sandbox "summarise this"    # name + inline
+    #   ocs run my-sandbox prompts/a.md        # name + file
+    run_first="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    if [[ -f "${SANDBOXES_BASE}/${run_first}/config/opencode-sandbox-config.yaml" ]]; then
+      run_dir="${SANDBOXES_BASE}/${run_first}"
+      [[ $# -gt 0 ]] || { echo "ocs: 'ocs run <name>' needs a prompt (a prompt file or an inline string)." >&2; exit 1; }
+      cd "${run_dir}"
+      exec "${BIN_DIR}/ocs-run" "$@"
+    fi
+    # First arg is the prompt (file or inline); resolve the project from CWD.
+    run_dir="$(find_sandbox_root 2>/dev/null || true)"
+    if [[ -n "${run_dir}" && -d "${run_dir}" ]]; then
+      cd "${run_dir}"
+      exec "${BIN_DIR}/ocs-run" "${run_first}" "$@"
+    fi
+    echo "ocs: 'ocs run' needs a project — pass a name ('ocs run <name> <prompt>'), or run from inside a sandbox project ('ocs list' shows names)." >&2
+    exit 1
+    ;;
+  rebuild|rebuild-container|start|start-container|tui|interactive|web|web-auth|terminal|test|clean|clear)
+    PROJ_DIR="$(resolve_project "${1:-}" "${cmd}")"
+    [[ $# -gt 0 ]] && shift
+    cd "${PROJ_DIR}"
+    case "${cmd}" in
+      rebuild|rebuild-container)   exec "${BIN_DIR}/ocs-rebuild-container" "$@" ;;
+      start|start-container)       exec "${BIN_DIR}/ocs-start-container" "$@" ;;
+      tui|interactive)             exec "${BIN_DIR}/ocs-interactive" "$@" ;;
+      web)                         exec "${BIN_DIR}/ocs-web" "$@" ;;
+      web-auth)                    exec "${BIN_DIR}/ocs-web-auth" "$@" ;;
+      terminal)                    exec "${BIN_DIR}/ocs-terminal" "$@" ;;
+      test)                        exec "${BIN_DIR}/ocs-test" "$@" ;;
+      clean|clear)                 exec "${BIN_DIR}/ocs-clean" ;;
+    esac
+    ;;
+  *)
+    echo "ocs: unknown command: ${cmd}" >&2
+    echo "" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -1,0 +1,65 @@
+# opencode-sandbox configuration
+# Changes require a container rebuild: ocs-rebuild-container
+
+sandbox-name: opencode-sandbox
+
+# The SINGLE user read-write directory, mounted into the container at
+# /workspace. New projects default this to a `workspace/` subdirectory (set by
+# `ocs init`); the self-hosted repo uses "." so its whole tree is the
+# workspace. Source code + the data directory both live in this dir.
+workspace: .
+
+# HTTP port used by the OpenCode server and host clients.
+opencode-port: 4096
+
+# CIDR range from which every sandbox gets its own dedicated /24 network
+# (e.g. 10.77.0.0/16 -> sandboxes live on 10.77.<N>.0/24).
+# Must be private space, prefix 8-24 (prefix >24 cannot hold a full /24). Requires a rebuild.
+sandbox-network-cidr: 10.77.0.0/16
+
+# Container image profile: which `config/Dockerfile.<name>` ocs rebuild / ocs
+# init use for this project. Selectable profiles are the Dockerfile.* files
+# in config/ (except the reserved Dockerfile.test, used only by `ocs test`).
+# Defaults to `minimal` when unset. Requires a rebuild.
+dockerfile: full
+
+# Outbound HTTP/HTTPS domains allowed via the proxy (Squid).
+# A leading dot matches the domain and all its subdomains.
+# Starts EMPTY — no domains are allowed by default; add only what the project
+# needs. (Model traffic uses intranet-endpoints, not this list.)
+http-domain-whitelist:
+  # - .github.com
+  # - .npmjs.org
+  # - .pypi.org
+  # - api.anthropic.com
+  # - api.openai.com
+
+# TCP ports on the host the container may reach directly,
+# bypassing the proxy (e.g. databases).
+# Disabled by default — empty means the container cannot reach any host port.
+host-ports:
+  # - 5432
+  # - 3306
+  # - 6379
+  # - 27017
+
+# Intranet ip:port endpoints the container may reach directly,
+# bypassing the proxy (e.g. on-prem services). Format: ipv4:port
+intranet-endpoints:
+  # - 10.0.0.5:3306
+  # Example: your local model server (Ollama etc.) — fill in your own ip:port,
+  # then run `ocs rebuild`.
+  # - 192.168.0.10:11434
+
+# Host env vars forwarded into the container.
+# Both key and value are required: CONTAINER_VAR: HOST_VAR
+env-passthrough:
+  GH_TOKEN: GH_TOKEN
+  # ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
+  # OPENAI_API_KEY: OPENAI_API_KEY
+  # DB_USER: DB_USER
+  # DB_PASSWORD: DB_PASSWORD
+
+volume-mounts:
+ # /test: "$HOME/test"
+

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // Always run the sandbox model (CLI paths also pin it via -m)
+  "model": "ollama/qwen3.8:27b",
+  "small_model": "ollama/qwen3.8:27b",
+  "subagent_depth": 2,
+
+  // Only the ollama provider may load — no other provider/model can be used
+  "enabled_providers": ["ollama"],
+
+  "provider": {
+    "ollama": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama",
+      "options": {
+        // Your local model server (Ollama). Use "ollama" (default) for the
+        // official ollama.ai cloud, or point at your own instance.
+        "baseURL": "http://localhost:11434/v1",
+        "timeout": 600000,
+        "chunkTimeout": 600000
+      },
+      "models": {
+        "qwen3.8:27b": {
+          "name": "Qwen3.8 27B",
+          "limit": {
+            "context": 196608,
+            "output": 32768
+          }
+        }
+      }
+    }
+  },
+
+  "permission": {
+    "read": "allow",
+    "write": "allow",
+    "edit": "allow",
+    "bash": "allow",
+    // The container's own firewall/mounts are the real security boundary —
+    // let the agent attempt things outside the workspace so those controls
+    // are what actually stop it (used by the ocs-test red-team).
+    "external_directory": "allow",
+    "task": "allow",
+    "todowrite": "allow",
+    // No web access per default — the sandbox firewall already denies
+    // all non-whitelisted egress, the tool denies as defense in depth.
+    "webfetch": "deny",
+    "websearch": "deny"
+  }
+}

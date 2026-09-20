@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ocs-interactive — start a one-shot container and drop into the opencode
+# interactive terminal (TUI) as the 'dev' user. Squid + firewall are applied
+# first by the entrypoint, so the session is sandboxed exactly like the web one.
+# Ctrl+D (or /exit) in opencode ends the session; the container is removed.
+
+# Source common configuration
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/shared"
+
+use_sandbox_root
+print_sandbox_dir
+
+if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
+  echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
+  echo "Run ocs rebuild first."
+  exit 1
+fi
+
+if ! "${CONTAINER_RUNTIME}" image inspect "${CONTAINER_NAME}" >/dev/null 2>&1; then
+  echo "Container image ${CONTAINER_NAME} is not available locally."
+  echo "Run ocs rebuild first."
+  exit 1
+fi
+
+if ! tty -s 2>/dev/null; then
+  echo "ocs-interactive needs a TTY (it starts the opencode TUI)." >&2
+  echo "Attach to a running web session with: ${SANDBOX_HOME}/bin/ocs-terminal" >&2
+  exit 1
+fi
+
+build_run_flags
+
+# Distinct name so a concurrent ocs-start-container (web) can keep running.
+NAME="${CONTAINER_NAME}-tui-$$"
+
+echo "Starting interactive opencode session (model: ${OPENCODE_MODEL}) ..."
+echo "   container: ${NAME}"
+echo "   type:      interactive TUI (no web server)"
+for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done
+echo "---"
+echo ""
+
+# OPCODE_CMD is eval'd by the entrypoint as the dev user; 'opencode' starts
+# the TUI, which is pinned to the configured model by opencode.jsonc
+# (model + enabled_providers) plus the container firewall.
+exec "${CONTAINER_RUNTIME}" run --rm --init -it \
+  --name "${NAME}" \
+  -e "OPCODE_CMD=opencode" \
+  -e "OPENCODE_MODEL=${OPENCODE_MODEL}" \
+  "${RUN_FLAGS[@]}" \
+  "${CONTAINER_NAME}"

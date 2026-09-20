@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ocs-kill — clean up everything the sandbox system created on this host:
+# running/leftover sandbox containers, their images, and their dedicated
+# networks. Use it after a crash, hard abort, or to fully wipe a sandbox.
+#
+#   ocs kill                 # all sandboxes (every project on this host)
+#   ocs kill <name>          # only containers/images/networks whose name contains <name>
+#   ocs kill --purge <name>  # also delete the in-project .sandbox/build/ of <name>
+#   ocs kill --state <name>  # also delete .sandbox/build/ and .sandbox/state/
+#
+# --purge and --state need a specific project (a name argument, or the current
+# directory must live inside one) — a "kill all" cannot remove on-disk trees
+# belonging to every project by name. Idempotent, and the build/ tree is the
+# only part that is safe to lose (ocs rebuild regenerates it); --state also
+# deletes the opencode session and the subnet map.
+#
+# Only objects named `ocs-*` / `ocs-net-*` (and the legacy `opencode-sandbox-*`
+# scheme from before the rename) are ever touched; everything else in the
+# Docker environment is left alone. Idempotent.
+
+# Source common configuration
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/shared"
+
+PURGE=0
+STATE=0
+FILTER=""
+for arg in "$@"; do
+  case "${arg}" in
+    --purge) PURGE=1 ;;
+    --state) STATE=1; PURGE=1 ;;
+    -h|--help)
+      sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    -*)
+      echo "unknown flag: ${arg} (expected --purge or --state)" >&2
+      exit 1
+      ;;
+    *) FILTER="${arg}" ;;
+  esac
+done
+# Objects are named in the "ocs-<project>-<hash>" scheme (see bin/shared).
+# The legacy "opencode-sandbox-<project>-<hash>" scheme is still matched so
+# objects created before the rename are cleaned up by the same command.
+CONTAINER_MATCH="^(ocs|opencode-sandbox)-"
+IMAGE_MATCH="^(ocs|opencode-sandbox)-"
+NET_MATCH="^(ocs-net|opencode-sandbox-net)-"
+if [[ -n "${FILTER}" ]]; then
+  CONTAINER_MATCH="${CONTAINER_MATCH}.*${FILTER}"
+  IMAGE_MATCH="${IMAGE_MATCH}.*${FILTER}"
+  NET_MATCH="${NET_MATCH}.*${FILTER}"
+fi
+
+echo "Cleaning up sandbox artifacts (filter: '${FILTER:-all}') ..."
+echo ""
+
+removed=0
+
+# Containers (running and stopped), by name. Removed first so they release
+# the network.
+while IFS= read -r c; do
+  [[ -z "${c}" ]] && continue
+  if [[ "${c}" =~ ${CONTAINER_MATCH} ]]; then
+    "${CONTAINER_RUNTIME}" rm -f "${c}" >/dev/null 2>&1
+    echo "  removed container: ${c}"
+    removed=$((removed + 1))
+  fi
+done < <("${CONTAINER_RUNTIME}" ps -a --format '{{.Names}}' 2>/dev/null)
+
+# Images (before networks so nothing keeps their state referenced)
+while IFS= read -r image; do
+  [[ -z "${image}" ]] && continue
+  if [[ "${image}" =~ ${IMAGE_MATCH} ]]; then
+    "${CONTAINER_RUNTIME}" rmi -f "${image}" >/dev/null 2>&1 || true
+    echo "  removed image:     ${image}"
+    removed=$((removed + 1))
+  fi
+done < <("${CONTAINER_RUNTIME}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+
+# Networks (created by the run front doors per sandbox)
+while IFS= read -r net; do
+  [[ -z "${net}" ]] && continue
+  if [[ "${net}" =~ ${NET_MATCH} ]]; then
+    "${CONTAINER_RUNTIME}" network rm "${net}" >/dev/null 2>&1
+    echo "  removed network:   ${net}"
+    removed=$((removed + 1))
+  fi
+done < <("${CONTAINER_RUNTIME}" network ls --format '{{.Name}}' 2>/dev/null)
+
+echo ""
+if [[ ${removed} -eq 0 ]]; then
+  echo "nothing to clean — all good"
+else
+  echo "sandbox cleanup done (${removed} removed)"
+fi
+
+# ---------------------------------------------------------------------------
+# --purge / --state: delete in-project on-disk trees.
+# Resolved from the name filter (treated as a sandbox name) or the current
+# directory. Never wipes every project's trees in a single "all" call — the
+# caller must pick a specific sandbox.
+# ---------------------------------------------------------------------------
+if [[ ${PURGE} -eq 1 || ${STATE} -eq 1 ]]; then
+  echo ""
+  # bin/shared defines find_sandbox_root once it has SANDBOXES_BASE — both are
+  # set up because we source shared at the top of this script. Resolve the
+  # project dir from the name (preferred) or the current working tree.
+  PROJ=""
+  if [[ -n "${FILTER}" ]]; then
+    PROJ="${SANDBOXES_BASE}/${FILTER}"
+    if [[ ! -f "${PROJ}/config/opencode-sandbox-config.yaml" ]]; then
+      echo "ERROR: --purge/--state need a known sandbox project name; '${FILTER}' not found under ${SANDBOXES_BASE}" >&2
+      exit 1
+    fi
+  else
+    PROJ="$(find_sandbox_root 2>/dev/null || true)"
+    if [[ -z "${PROJ}" || ! -d "${PROJ}" ]]; then
+      echo "ERROR: --purge/--state need a specific sandbox — pass a name, or run from inside one." >&2
+      exit 1
+    fi
+  fi
+
+  BUILD_DIR="${PROJ}/.sandbox/build"
+  STATE_DIR="${PROJ}/.sandbox/state"
+  if [[ ${PURGE} -eq 1 ]]; then
+    if [[ -d "${BUILD_DIR}" ]]; then
+      rm -rf -- "${BUILD_DIR}"
+      echo "removed build dir:  ${BUILD_DIR}"
+    fi
+  fi
+  if [[ ${STATE} -eq 1 ]]; then
+    if [[ -d "${STATE_DIR}" ]]; then
+      rm -rf -- "${STATE_DIR}"
+      echo "removed state dir:  ${STATE_DIR}"
+    fi
+  fi
+fi

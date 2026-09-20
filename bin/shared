@@ -1,0 +1,501 @@
+#!/usr/bin/env bash
+# Shared configuration, utilities, and guards for sandbox scripts
+# shellcheck disable=SC2034  # Variables are used by sourcing scripts
+
+# Resolve directories. shared lives in bin/, so the sandbox home (repo root,
+# which holds config/, docker/, test/) is its parent directory.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+SANDBOX_HOME="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+ROOT_DIR="$(pwd)"
+
+# Base directory where ocs init creates new sandbox projects — inside this
+# repository (./sandboxes/), so all sandboxes live in one place. New sandbox
+# projects are gitignored by default.
+# Override with $OPENCODE_SANDBOX_BASE if you prefer a different location.
+SANDBOXES_BASE="${OPENCODE_SANDBOX_BASE:-${SANDBOX_HOME}/sandboxes}"
+
+refresh_root_paths() {
+  ROOT_DIR="${1:?root directory is required}"
+  PORT=4096
+  CONFIG_FILE="${ROOT_DIR}/config/opencode-sandbox-config.yaml"
+
+  # Read sandbox-name from opencode-sandbox-config.yaml
+  local sandbox_name=""
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      # Match top-level key: no leading whitespace, key is "sandbox-name", space optional
+      if [[ "${line}" =~ ^sandbox-name:[[:space:]]*([^#[:space:]][^#]*) ]]; then
+        # Trim trailing whitespace and inline comments from captured value
+        sandbox_name="${BASH_REMATCH[1]}"
+        sandbox_name="${sandbox_name%%#*}"
+        sandbox_name="${sandbox_name%"${sandbox_name##*[! ]}"}"
+        break
+      fi
+    done < "${CONFIG_FILE}"
+  fi
+
+  if [[ -z "${sandbox_name}" ]]; then
+    if [[ -f "${CONFIG_FILE}" ]]; then
+      echo "ERROR: 'sandbox-name' is not set in ${CONFIG_FILE}" >&2
+      echo "  Add a top-level entry to the file, e.g.:" >&2
+      echo "    sandbox-name: my-project" >&2
+      echo "  Run 'ocs init' to regenerate the config with a sandbox name if needed." >&2
+      return 1
+    fi
+    # Config file absent (e.g. during ocs-init before config is created) — leave paths unset
+    SANDBOX_ID=""
+    CONTAINER_NAME=""
+    OPENCODE_SANDBOX_DIR=""
+    SANDBOX_BUILD_DIR=""
+    SANDBOX_STATE_BASE=""
+    SANDBOX_MAP_FILE=""
+    OPENCODE_PASSWORD_FILE=""
+    OPENCODE_PORT_FILE=""
+    OPENCODE_STATE_DIR=""
+    SANDBOX_CIDR_FILE=""
+    return 0
+  fi
+
+  # Validate sandbox-name for Docker naming rules: lowercase letters, digits, hyphens only.
+  if [[ ! "${sandbox_name}" =~ ^[a-z0-9][a-z0-9-]*[a-z0-9]$|^[a-z0-9]$ ]]; then
+    echo "ERROR: 'sandbox-name' value '${sandbox_name}' in ${CONFIG_FILE} is not valid." >&2
+    echo "  Docker requires names to contain only lowercase letters, digits, and hyphens," >&2
+    echo "  and must start and end with a letter or digit." >&2
+    echo "  Example: sandbox-name: my-project" >&2
+    return 1
+  fi
+
+  # Compute SANDBOX_ID: combine sandbox-name with a short hash of the physical project root
+  # path. Using realpath ensures symlinks don't produce different IDs for the same checkout.
+  local config_dir
+  if command -v realpath >/dev/null 2>&1; then
+    config_dir="$(realpath "$(dirname "${CONFIG_FILE}")")"
+  else
+    config_dir="$(cd "$(dirname "${CONFIG_FILE}")" && pwd -P)"
+  fi
+  local dir_hash dir_hash_hex
+  dir_hash="$(printf '%s' "${config_dir}" | cksum | cut -d' ' -f1)"
+  dir_hash_hex="$(printf '%x' "${dir_hash}")"
+  SANDBOX_ID="${sandbox_name}-${dir_hash_hex:0:6}"
+
+  # Shared prefix for every Docker object this sandbox creates. Kept short and
+  # tool-specific (`ocs-`) so users can `docker ps | grep '^ocs-'` without the
+  # long `opencode-sandbox-` string. The project name and its per-checkout hash
+  # (SANDBOX_ID) are both in the name, e.g. ocs-myproject-a3f92c.
+  CONTAINER_NAME="ocs-${SANDBOX_ID}"
+
+  # ---------------------------------------------------------------------------
+  # Workspace — the SINGLE user read-write dir, mounted into the container at
+  # /workspace. It is a project subdirectory named by the `workspace:` config
+  # key (default "workspace"; the repo uses "." so its whole tree is the
+  # workspace). Source code + the data dir both live here; the agent's rw
+  # target is this directory only.
+  # ---------------------------------------------------------------------------
+  local workspace_key="workspace"
+  if [[ -f "${CONFIG_FILE}" ]]; then
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      if [[ "${line}" =~ ^workspace:[[:space:]]*([^#[:space:]][^#]*) ]]; then
+        workspace_key="${BASH_REMATCH[1]}"
+        workspace_key="${workspace_key%%#*}"
+        workspace_key="${workspace_key%"${workspace_key##*[! ]}"}"
+        break
+      fi
+    done < "${CONFIG_FILE}"
+  fi
+  [[ -z "${workspace_key}" ]] && workspace_key="workspace"
+  case "${workspace_key}" in
+    '.' | './') SANDBOX_WORKSPACE_DIR="${ROOT_DIR}" ;;
+    *)          SANDBOX_WORKSPACE_DIR="${ROOT_DIR}/${workspace_key}" ;;
+  esac
+
+  # ---------------------------------------------------------------------------
+  # Runtime base — the build context (disposable; regenerated every rebuild) and
+  # the persistent opencode state (the session tree mounted at
+  # /home/dev/.local/share/opencode, so opencode can use its data in future
+  # runs) + the deterministic subnet map.
+  # Lives INSIDE the project under `.sandbox/` (gitignored via the `.sandbox`
+  # entry) so there is a single predictable location per project and `ocs clean`
+  # can remove it with a scoped rm -rf. Override per machine with
+  # $OPENCODE_SANDBOX_RUNTIME_BASE (or the finer-grained BUILD_BASE/STATE_BASE).
+  # ---------------------------------------------------------------------------
+  local runtime_base
+  runtime_base="${OPENCODE_SANDBOX_RUNTIME_BASE:-${ROOT_DIR}/.sandbox}"
+  SANDBOX_RUNTIME_BASE="${runtime_base}"
+  SANDBOX_BUILD_DIR="${OPENCODE_SANDBOX_BUILD_BASE:-${runtime_base}/build}"
+  SANDBOX_STATE_BASE="${OPENCODE_SANDBOX_STATE_BASE:-${runtime_base}/state}"
+  # Backward-compat alias — every existing reference to OPENCODE_SANDBOX_DIR
+  # (build context, extracted lists, env files, password, port, cidr, log)
+  # still works unchanged.
+  OPENCODE_SANDBOX_DIR="${SANDBOX_BUILD_DIR}"
+
+  # File paths
+  OPENCODE_PASSWORD_FILE="${SANDBOX_BUILD_DIR}/opencode-password"
+  OPENCODE_PORT_FILE="${SANDBOX_BUILD_DIR}/opencode-port"
+  OPENCODE_STATE_DIR="${SANDBOX_STATE_BASE}/opencode"
+  SANDBOX_MAP_FILE="${SANDBOX_STATE_BASE}/sandbox-network-map"
+  SANDBOX_CIDR_FILE="${SANDBOX_BUILD_DIR}/sandbox-network-cidr.txt"
+  # opencode config (model/provider/permissions) — mounted read-only into the
+  # container; the agent reads it but cannot rewrite it.
+  SANDBOX_JSONC_FILE="${ROOT_DIR}/config/opencode.jsonc"
+  SANDBOX_JSONC_CONTAINER_PATH="/etc/opencode/opencode.jsonc"
+
+  # Ensure runtime dirs exist and a default dedicated-network range is present
+  # (a rebuild overwrites the range with the configured one).
+  # Set OPENCODE_SANDBOX_NO_MKDIR=1 to resolve paths without creating anything
+  # (used by ocs-clean so a cleanup pass never re-creates what it removes).
+  if [[ -z "${OPENCODE_SANDBOX_NO_MKDIR:-}" ]]; then
+    mkdir -p "${SANDBOX_BUILD_DIR}" 2>/dev/null && chmod u=rwx,go= "${SANDBOX_BUILD_DIR}" 2>/dev/null
+    mkdir -p "${OPENCODE_STATE_DIR}" 2>/dev/null && chmod u=rwx,go= "${OPENCODE_STATE_DIR}" 2>/dev/null
+    if [[ ! -f "${SANDBOX_CIDR_FILE}" ]]; then
+      printf '10.77.0.0/16\n' > "${SANDBOX_CIDR_FILE}"
+    fi
+  fi
+
+  if [[ -f "${OPENCODE_PORT_FILE}" ]]; then
+    PORT="$(cat "${OPENCODE_PORT_FILE}")"
+  fi
+}
+
+find_sandbox_root() {
+  local dir
+
+  dir="$(pwd)"
+
+  while [[ "${dir}" != "/" ]]; do
+    if [[ -f "${dir}/config/opencode-sandbox-config.yaml" ]]; then
+      printf '%s\n' "${dir}"
+      return 0
+    fi
+
+    dir="$(dirname "${dir}")"
+  done
+
+  if [[ -f "/config/opencode-sandbox-config.yaml" ]]; then
+    printf '/\n'
+    return 0
+  fi
+
+  return 1
+}
+
+use_sandbox_root() {
+  local detected_root
+
+  detected_root="$(find_sandbox_root)" || {
+    echo "No config/opencode-sandbox-config.yaml found in the current directory or any parent directory of $(pwd)." >&2
+    echo "Run ocs-init from your project root to initialize the sandbox first." >&2
+    return 1
+  }
+
+  refresh_root_paths "${detected_root}"
+}
+
+print_sandbox_dir() {
+  echo ">> using sandbox directory: ${OPENCODE_SANDBOX_DIR}"
+}
+
+refresh_root_paths "${ROOT_DIR}"
+
+# The CLI entrypoints (ocs-interactive, ocs-run) pin this model with -m so no
+# in-session override is possible. Keep in sync with 'model' in config/opencode.jsonc.
+OPENCODE_MODEL="ollama/qwen3.8:27b"
+
+# Container runtime: prefer docker, fall back to podman
+if command -v docker >/dev/null 2>&1; then
+  CONTAINER_RUNTIME=docker
+elif command -v podman >/dev/null 2>&1; then
+  CONTAINER_RUNTIME=podman
+else
+  echo "Neither docker nor podman found in PATH." >&2
+  exit 1
+fi
+
+# Network configuration
+LOCALHOST=127.0.0.1
+
+open_url() {
+  local url="${1:?URL is required}"
+  local opener
+  local -a openers
+
+  case "$(uname -s)" in
+    Darwin)
+      openers=(open)
+      ;;
+    Linux)
+      openers=(xdg-open open)
+      ;;
+    *)
+      openers=(open xdg-open)
+      ;;
+  esac
+
+  for opener in "${openers[@]}"; do
+    if command -v "${opener}" >/dev/null 2>&1; then
+      "${opener}" "${url}"
+      return 0
+    fi
+  done
+
+  echo "Could not find a supported browser opener. Install xdg-open or open the URL manually: ${url}" >&2
+  return 1
+}
+
+# Resolve the --add-host flag for docker.host. Echoes the flag (or nothing),
+# and warns on stderr if the host IP could not be determined.
+# Shared by ocs-start-container, ocs-interactive, ocs-run.
+resolve_add_host_flag() {
+  if [[ "${CONTAINER_RUNTIME}" == "docker" ]]; then
+    echo "--add-host=docker.host:host-gateway"
+    return 0
+  fi
+
+  # Podman: determine the host gateway IP explicitly.
+  local host_ip=""
+  # For Podman with a VM (macOS, user-mode networking via gvproxy):
+  # host.containers.internal resolves to the gvproxy special address (192.168.127.254)
+  # which forwards connections to localhost on the Mac host.
+  if "${CONTAINER_RUNTIME}" machine inspect >/dev/null 2>&1; then
+    host_ip="$("${CONTAINER_RUNTIME}" machine ssh \
+      "getent hosts host.containers.internal 2>/dev/null | awk '{print \$1; exit}'" 2>/dev/null)"
+  fi
+  # Fall back to the Podman bridge network gateway (non-VM / Linux hosts)
+  if [[ -z "${host_ip}" ]]; then
+    host_ip="$("${CONTAINER_RUNTIME}" network inspect podman 2>/dev/null \
+      | grep -oE '"gateway":[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' \
+      | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
+      | head -1)"
+  fi
+  # Last resort: host machine's default route gateway
+  if [[ -z "${host_ip}" ]]; then
+    if command -v ip >/dev/null 2>&1; then
+      host_ip="$(ip -4 route show default 2>/dev/null | awk 'NR==1{print $3}')"
+    elif command -v route >/dev/null 2>&1; then
+      host_ip="$(route -n get default 2>/dev/null | awk '/gateway:/{print $2}')"
+    fi
+  fi
+
+  if [[ -n "${host_ip}" ]]; then
+    echo "--add-host=docker.host:${host_ip}"
+  else
+    echo "WARNING: Could not determine host gateway IP for Podman." >&2
+    echo "         docker.host will not be resolvable inside the container." >&2
+  fi
+  return 0
+}
+
+# Validate a sandbox network CIDR: IPv4 with octets 0-255 and prefix 8..24.
+# (prefix > 24 is too small to contain a /24 per sandbox; prefix < 8 would
+# allow the range to cover public space.)
+valid_sandbox_cidr() {
+  local cidr="${1:-}"
+  [[ "${cidr}" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+  local o
+  for o in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
+    (( o <= 255 )) || return 1
+  done
+  (( BASH_REMATCH[5] >= 8 && BASH_REMATCH[5] <= 24 )) || return 1
+  return 0
+}
+
+# Derive the subnet of this sandbox's dedicated network.
+# Reads the configured range from sandbox-network-cidr.txt (written by ocs-
+# rebuild-container from config/opencode-sandbox-config.yaml; default
+# 10.77.0.0/16) and assigns the sandbox a unique /24 inside the range.
+# The assignment is deterministic (hash of SANDBOX_ID) and persisted in
+# sandbox-network-map, so a sandbox keeps the same subnet across rebuilds.
+# Requires: SANDBOX_ID, OPENCODE_SANDBOX_DIR. Echoes the subnet (e.g. 10.77.5.0/24).
+derive_sandbox_subnet() {
+  local cidr="10.77.0.0/16"
+  local cidr_file="${SANDBOX_CIDR_FILE:-${OPENCODE_SANDBOX_DIR}/sandbox-network-cidr.txt}"
+  if [[ -f "${cidr_file}" ]]; then
+    cidr="$(tr -d '[:space:]' < "${cidr_file}")"
+  fi
+  if ! valid_sandbox_cidr "${cidr}"; then
+    echo "ERROR: sandbox network CIDR '${cidr}' is not a valid IPv4 CIDR for the sandbox network (octets 0-255, prefix 8-24)." >&2
+    echo "       Fix 'sandbox-network-cidr' in config/opencode-sandbox-config.yaml and rebuild." >&2
+    return 1
+  fi
+
+  local map_file="${SANDBOX_MAP_FILE:-${SANDBOX_STATE_BASE}/sandbox-network-map}"
+  local subnet=""
+  if [[ -f "${map_file}" ]]; then
+    while IFS= read -r id || [[ -n "${id}" ]]; do
+      if [[ "${id%%:*}" == "${SANDBOX_ID}" ]]; then
+        subnet="${id##*:}"
+        break
+      fi
+    done < "${map_file}"
+  fi
+
+  if [[ -z "${subnet}" ]]; then
+    # /24 slot inside the range: slot = (cksum of SANDBOX_ID) % 2^(24-prefix).
+    # Base is the network address of the CIDR (lower octets below the prefix
+    # boundary are forced to 0 when computing the host of the slot).
+    local base="${cidr%/*}" prefix="${cidr##*/}"
+    local a b c d
+    local IFS=.
+    read -r a b c d <<< "${base}"
+    local slots slot idx n
+    slots=$(( 1 << (24 - prefix) ))
+    slot=$(( $(printf '%s' "${SANDBOX_ID}" | cksum | cut -d' ' -f1) % slots ))
+    # network base with the 8 bits above the slot position cleared
+    idx=$(( ( a << 24 ) | ( b << 16 ) | ( c << 8 ) | d ))
+    idx=$(( (idx & ~0xff) + (slot << 8) ))
+    a=$(( (idx >> 24) & 255 )); b=$(( (idx >> 16) & 255 )); c=$(( (idx >> 8) & 255 ))
+    subnet="${a}.${b}.${c}.0/24"
+    local tmp
+    tmp="$(cat "${map_file}" 2>/dev/null; printf '%s:%s\n' "${SANDBOX_ID}" "${subnet}")"
+    printf '%s\n' "${tmp}" > "${map_file}"
+  fi
+
+  printf '%s\n' "${subnet}"
+}
+
+# Create (if needed) and return the dedicated docker network for this sandbox.
+# One fixed network per sandbox: ocs-net-<SANDBOX_ID>. All runs of
+# a sandbox join it; sandboxes of different projects never share an L2 segment.
+# This isolates sandbox containers from each other and from other Docker
+# containers on the host (which stay on their own networks) in both directions.
+ensure_sandbox_network() {
+  local net_name="ocs-net-${SANDBOX_ID}"
+  local subnet
+  subnet="$(derive_sandbox_subnet)" || return 1
+  local existing_sub
+  existing_sub="$("${CONTAINER_RUNTIME}" network inspect "${net_name}" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}' 2>/dev/null)"
+  if [[ -z "${existing_sub}" ]]; then
+    "${CONTAINER_RUNTIME}" network create --subnet "${subnet}" "${net_name}" >/dev/null
+  elif [[ "${existing_sub}" != "${subnet}" ]]; then
+    echo "Recreating network ${net_name}: subnet ${existing_sub} -> ${subnet} (config changed)" >&2
+    "${CONTAINER_RUNTIME}" network rm "${net_name}" >/dev/null 2>&1 || true
+    "${CONTAINER_RUNTIME}" network create --subnet "${subnet}" "${net_name}" >/dev/null
+  fi
+  printf '%s\n' "${net_name}"
+}
+
+# ---------------------------------------------------------------------------
+# Egress / capabilities — derived from the SAME signal (a non-empty
+# http-domain-whitelist => squid runs). Used by both the entrypoint (inside
+# the container) and the bin scripts (caps) so the two never disagree.
+# ---------------------------------------------------------------------------
+
+# True (0) when the project whitelists at least one outbound domain — i.e.
+# squid will be started in the container (the entrypoint reads the same file).
+# Used only for the RUN_LOG line; caps are decoupled from this (see below).
+proxy_enabled() {
+  [[ -s "${OPENCODE_SANDBOX_DIR}/squid-whitelist.txt" ]]
+}
+
+# CAP_FLAGS — the container capability set.
+#   NET_ADMIN : the iptables firewall (always runs).
+#   SETUID,SETGID : gosu's root->dev privilege drop (setresuid/setresgid) and
+#                   squid's root->proxy drop — both need them, unconditionally
+#                   (gosu runs in every door, squid only when whitelisted).
+# Keep this the single place caps are granted. (The previous attempt to trim
+# SETUID/SETGID when squid was off broke `gosu dev` — every door drops
+# privileges to dev, so these caps are not optional even without a proxy.)
+compute_cap_flags() {
+  CAP_FLAGS=(--cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID)
+}
+
+# Build the docker-run flag array for the sandbox: caps, workspace mount
+# (the single user rw dir), opencode state (ro? no — rw persistent), the
+# read-only opencode.jsonc, env-passthrough, static env, extra volume mounts,
+# add-host, and the dedicated network.
+# Requires: CONTAINER_NAME, SANDBOX_ID, ROOT_DIR, SANDBOX_WORKSPACE_DIR,
+#           OPENCODE_STATE_DIR, OPENCODE_SANDBOX_DIR.
+# Result: populates RUN_FLAGS (array), RUN_LOG (array of human lines), and
+#         CAP_FLAGS (array).
+build_run_flags() {
+  compute_cap_flags
+  RUN_FLAGS=("${CAP_FLAGS[@]}")
+
+  # The single user read-write dir, at a fixed in-container path.
+  RUN_FLAGS+=(-v "${SANDBOX_WORKSPACE_DIR}:/workspace")
+  RUN_LOG=("    workspace (rw): ${SANDBOX_WORKSPACE_DIR} -> /workspace")
+
+  # Self-hosted case: the whole project is the workspace, and the runtime
+  # base (.sandbox: build context + opencode state) lives INSIDE it — so it
+  # would be visible to the agent. Mask it with an empty read-only dir so the
+  # runtime tree is never part of the mounted view. (For a normal project the
+  # workspace is a subdirectory and .sandbox is outside it — nothing to mask.)
+  if [[ "${SANDBOX_WORKSPACE_DIR}" == "${ROOT_DIR}" && "${SANDBOX_RUNTIME_BASE}" == "${ROOT_DIR}"/* ]]; then
+    local mask_rel="${SANDBOX_RUNTIME_BASE#"${ROOT_DIR}/"}"
+    local mask_src="${SANDBOX_RUNTIME_BASE}/.mask"
+    mkdir -p "${mask_src}" 2>/dev/null || true
+    chmod u=rwx,go= "${mask_src}" 2>/dev/null || true
+    RUN_FLAGS+=(-v "${mask_src}:/workspace/${mask_rel}:ro")
+    RUN_LOG+=("    masked   (ro empty): /workspace/${mask_rel} (runtime tree hidden from workspace)")
+  fi
+
+  # OpenCode state — persistent (rw), usable across runs; a neutral path so
+  # the .sandbox / runtime tree name never appears in the container.
+  RUN_FLAGS+=(-v "${OPENCODE_STATE_DIR}:/home/dev/.local/share/opencode")
+  RUN_LOG+=("    opencode state (rw): ${OPENCODE_STATE_DIR} -> /home/dev/.local/share/opencode")
+
+  # opencode config (model/provider/permissions) — mounted READ-ONLY so the
+  # agent can read it but never rewrite it (read-only). Live file: a change
+  # needs no rebuild, only a re-run of the door.
+  if [[ -f "${SANDBOX_JSONC_FILE}" ]]; then
+    RUN_FLAGS+=(-v "${SANDBOX_JSONC_FILE}:${SANDBOX_JSONC_CONTAINER_PATH}:ro")
+    RUN_FLAGS+=(-e "OPENCODE_CONFIG=${SANDBOX_JSONC_CONTAINER_PATH}")
+    RUN_LOG+=("    opencode config (ro): ${SANDBOX_JSONC_FILE} -> ${SANDBOX_JSONC_CONTAINER_PATH}")
+  fi
+
+  # egress: tell the image whether squid is active (the entrypoint reads the
+  # same whitelist file; we just surface it in the run log).
+  if proxy_enabled; then
+    RUN_LOG+=("    egress: squid proxy ENABLED (http-domain-whitelist non-empty)")
+  else
+    RUN_LOG+=("    egress: squid proxy DISABLED (no http-domain-whitelist) — firewall only")
+  fi
+
+  # env-passthrough
+  local ENV_PASSTHROUGH_FILE="${OPENCODE_SANDBOX_DIR}/env-passthrough.txt"
+  if [[ -f "${ENV_PASSTHROUGH_FILE}" ]]; then
+    while IFS= read -r entry || [[ -n "${entry}" ]]; do
+      [[ -z "${entry}" ]] && continue
+      local container_name="${entry%%=*}"
+      local host_name="${entry#*=}"
+      if [[ -n "${!host_name+set}" ]]; then
+        RUN_FLAGS+=(-e "${container_name}=${!host_name}")
+        RUN_LOG+=("    env: ${container_name} (from host \$${host_name})")
+      else
+        RUN_LOG+=("    env: ${container_name} (skipped — \$${host_name} not set on host)")
+      fi
+    done < "${ENV_PASSTHROUGH_FILE}"
+  fi
+
+  # static env
+  local ENV_STATIC_FILE="${OPENCODE_SANDBOX_DIR}/env.txt"
+  if [[ -f "${ENV_STATIC_FILE}" ]]; then
+    while IFS= read -r assignment || [[ -n "${assignment}" ]]; do
+      [[ -z "${assignment}" ]] && continue
+      RUN_FLAGS+=(--env "${assignment}")
+      RUN_LOG+=("    env: ${assignment} (static)")
+    done < "${ENV_STATIC_FILE}"
+  fi
+
+  # extra volume mounts
+  local VOLUME_MOUNTS_FILE="${OPENCODE_SANDBOX_DIR}/volume-mounts.txt"
+  if [[ -f "${VOLUME_MOUNTS_FILE}" ]]; then
+    while IFS= read -r entry || [[ -n "${entry}" ]]; do
+      [[ -z "${entry}" ]] && continue
+      local container_dir="${entry%%=*}"
+      local host_dir="${entry#*=}"
+      # Expand environment variables in the host path (e.g. $HOME, ${HOME})
+      host_dir="$(eval echo "${host_dir}")"
+      RUN_FLAGS+=(-v "${host_dir}:${container_dir}")
+      RUN_LOG+=("    mount: ${host_dir} -> ${container_dir}")
+    done < "${VOLUME_MOUNTS_FILE}"
+  fi
+
+  local add_host
+  add_host="$(resolve_add_host_flag)"
+  [[ -n "${add_host}" ]] && RUN_FLAGS+=("${add_host}")
+
+  local net_name
+  net_name="$(ensure_sandbox_network)"
+  RUN_FLAGS+=(--network "${net_name}")
+  RUN_LOG+=("    network: ${net_name} (dedicated per sandbox, range $(tr -d '[:space:]' < "${SANDBOX_CIDR_FILE}" 2>/dev/null || echo 10.77.0.0/16))")
+}

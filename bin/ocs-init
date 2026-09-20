@@ -1,14 +1,63 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Source common configuration
+# ocs-init — create a new sandbox project under ./sandboxes/<name>/.
+#
+#   ocs init <name>                       # interactive (default)
+#   ocs init -y <name>                    # no prompts, accept all defaults
+#   ocs init -y --dockerfile full <name>  # pick a profile non-interactively
+#   ocs init -y --no-build <name>         # skip the initial image build
+#
+# Flags (before or after the name; the first non-flag is the project name):
+#   -y, --yes                non-interactive: accept every default (no prompts)
+#   -p, --dockerfile <name>  image profile (minimal|full|… a Dockerfile.<name>)
+#   --no-build               do not build the image at the end
+#   -h, --help               show this help
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
-source "${SCRIPT_DIR}/../shared"
-# Re-establish SCRIPT_DIR after sourcing shared (shared redefines it for its own location)
+source "${SCRIPT_DIR}/shared"
+# shared redefines SCRIPT_DIR for its own location; re-establish it so the
+# sibling bin scripts below can be referenced by path.
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-TARGET_DIR="${1:-$(pwd)}"
+# --- flag parsing (flags may appear before or after the project name) ---
+ASSUME_YES=0
+PROFILE_FLAG=""
+NO_BUILD=0
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -y|--yes)                ASSUME_YES=1; shift ;;
+    -p|--dockerfile)         PROFILE_FLAG="${2:?--dockerfile needs a value (e.g. minimal|full)}"; shift 2 ;;
+    --dockerfile=*)          PROFILE_FLAG="${1#--dockerfile=}"; shift ;;
+    --no-build)              NO_BUILD=1; shift ;;
+    -h|--help)
+      sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    --*)                     echo "unknown flag: $1 (see: ocs init -h)" >&2; exit 1 ;;
+    -*)                      echo "unknown flag: $1 (see: ocs init -h)" >&2; exit 1 ;;
+    *)                       ARGS+=("$1"); shift ;;
+  esac
+done
+
+# New sandbox projects are created under the base sandbox directory
+# (default ./sandboxes inside the opencode-sandbox repo) to keep all
+# sandboxes in one place:
+#   <SANDBOXES_BASE>/<name>
+NAME="${ARGS[0]:-$(basename "$(pwd)")}"
+# Docker naming: lowercase letters, digits, hyphens; start/end alnum.
+if [[ ! "${NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  echo "ERROR: sandbox name '${NAME}' is not valid (use lowercase letters, digits, hyphens)." >&2
+  exit 1
+fi
+TARGET_DIR="${SANDBOXES_BASE}/${NAME}"
+if [[ -e "${TARGET_DIR}" && ! -d "${TARGET_DIR}" ]]; then
+  echo "ERROR: ${TARGET_DIR} exists and is not a directory." >&2
+  exit 1
+fi
+mkdir -p "${TARGET_DIR}"
 TARGET_DIR="$(cd -- "${TARGET_DIR}" && pwd)"
 
 refresh_root_paths "${TARGET_DIR}"
@@ -17,8 +66,12 @@ echo "Initializing OpenCode sandbox in: ${TARGET_DIR}"
 echo ""
 
 # Ask the user a yes/no question; default is yes (Enter accepts).
+# With -y/--yes the question is accepted without prompting (fully scriptable).
 confirm() {
   local prompt="${1:?prompt is required}"
+  if [[ "${ASSUME_YES}" -eq 1 ]]; then
+    return 0
+  fi
   local answer
   while true; do
     printf '%s [Y/n] ' "${prompt}"
@@ -31,42 +84,42 @@ confirm() {
   done
 }
 
-# --- mise.toml ---
-MISE_FILE="${TARGET_DIR}/mise.toml"
-echo "Step 1/5: Write a minimal mise.toml (opencode only) to ${MISE_FILE}."
-echo "  This file tells mise which version of opencode to install in the container."
-if [[ -f "${MISE_FILE}" ]]; then
-  echo "  Already exists — skipping."
-else
-  if confirm "  Write mise.toml?"; then
-    cp "${SANDBOX_HOME}/init-templates/mise.toml" "${MISE_FILE}"
-    echo "  ✓ Written."
-  else
-    echo "  Skipped."
-  fi
-fi
-echo ""
-
 # --- opencode-sandbox-config (required) ---
-CONFIG_FILE="${TARGET_DIR}/opencode-sandbox-config.yaml"
-CONFIG_TEMPLATE="${SANDBOX_HOME}/init-templates/opencode-sandbox-config.yaml"
-echo "Step 2/5: Create ${CONFIG_FILE} from template (required)."
+CONFIG_FILE="${TARGET_DIR}/config/opencode-sandbox-config.yaml"
+CONFIG_TEMPLATE="${SANDBOX_HOME}/config/opencode-sandbox-config.yaml"
+echo "Step 1/5: Create ${CONFIG_FILE} from template (required)."
 echo "  This file controls the OpenCode HTTP port, outbound proxy access, host"
-echo "  port access, and which host environment variables are forwarded."
+echo "  port and intranet endpoint access, and which host environment variables are forwarded."
 if [[ -f "${CONFIG_FILE}" ]]; then
   echo "  Already exists — skipping."
 else
-  if confirm "  Create opencode-sandbox-config.yaml from template?"; then
+  if confirm "  Create config/opencode-sandbox-config.yaml from template?"; then
+    mkdir -p "${TARGET_DIR}/config"
     cp "${CONFIG_TEMPLATE}" "${CONFIG_FILE}"
     # Inject sandbox-name: use the directory basename as the human-readable project label.
     # Uniqueness across multiple checkouts is handled at runtime via SANDBOX_ID in shared.
     PROJECT_NAME="$(basename "${TARGET_DIR}")"
-    # Prepend sandbox-name as the first entry in the config file
+    # Prepend sandbox-name as the first entry in the config file. The template
+    # (shared with the repo's own config) already carries a sandbox-name; strip
+    # it first so the new project's name is the single authoritative value.
+    # (shared reads the first occurrence, but keep the file clean.)
     TEMP_FILE="$(mktemp)"
     printf 'sandbox-name: %s\n\n' "${PROJECT_NAME}" > "${TEMP_FILE}"
-    cat "${CONFIG_FILE}" >> "${TEMP_FILE}"
+    grep -vE '^sandbox-name:' "${CONFIG_FILE}" >> "${TEMP_FILE}" || true
     mv "${TEMP_FILE}" "${CONFIG_FILE}"
-    echo "  ✓ Created (sandbox-name: ${PROJECT_NAME})."
+    # The repo template ships `workspace:` for the self-hosted repo; a new
+    # project wants its own `workspace/` subdirectory (the single rw dir).
+    workspace="$(grep -E '^workspace:[[:space:]]*[^[:space:]]' "${CONFIG_FILE}" | awk '{print $2}')"
+    if [[ "${workspace}" == "." || "${workspace}" == "./" ]]; then
+      TMP_W="$(mktemp)"
+      while IFS= read -r wline || [[ -n "${wline}" ]]; do
+        if [[ "${wline}" =~ ^workspace: ]]; then printf 'workspace: workspace\n'; else printf '%s\n' "${wline}"; fi
+      done < "${CONFIG_FILE}" > "${TMP_W}"
+      mv "${TMP_W}" "${CONFIG_FILE}"
+      workspace="workspace"
+    fi
+    mkdir -p "${TARGET_DIR}/${workspace}"
+    echo "  ✓ Created (sandbox-name: ${PROJECT_NAME}; workspace: ${workspace}/)."
   else
     echo "  This file is required. Aborting initialization."
     exit 1
@@ -74,15 +127,78 @@ else
 fi
 echo ""
 
+# --- docker image profile selection ---
+echo "Step 2/5: Select the container image profile."
+echo "  The profile defines what software is installed in the image."
+echo "  Available profiles (from config/Dockerfile.*):"
+PROFILE_NAMES=()
+for f in "${SANDBOX_HOME}/config/Dockerfile".*; do
+  [[ -f "${f}" ]] || continue
+  base="$(basename "${f}")"
+  # skip reserved test profile
+  case "${base}" in Dockerfile.test) continue ;; esac
+  PROFILE_NAMES+=("${base#Dockerfile.}")
+done
+if [[ ${#PROFILE_NAMES[@]} -eq 0 ]]; then
+  echo "  ERROR: no selectable Dockerfile profiles found under ${SANDBOX_HOME}/config/." >&2
+  exit 1
+fi
+for p in "${PROFILE_NAMES[@]}"; do echo "    - ${p}"; done
+
+DEFAULT_PROFILE="minimal"
+# Fall back to the first available profile if the default is not selectable.
+if [[ " ${PROFILE_NAMES[*]} " != *" ${DEFAULT_PROFILE} "* ]]; then
+  DEFAULT_PROFILE="${PROFILE_NAMES[0]}"
+fi
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  echo "  ERROR: ${CONFIG_FILE} is required before the profile can be written. Re-run ocs init and accept step 1." >&2
+  exit 1
+fi
+# Note the currently active value (the template ships the repo's own choice,
+# so a fresh project would otherwise inherit it) so the user can keep or change it.
+CURRENT_VALUE="$(grep '^dockerfile:' "${CONFIG_FILE}" 2>/dev/null | awk '{print $2}')"
+if [[ -n "${CURRENT_VALUE}" && "${CURRENT_VALUE}" != "${DEFAULT_PROFILE}" ]]; then
+  echo "  (config currently has: ${CURRENT_VALUE})"
+fi
+echo "  [default: ${DEFAULT_PROFILE}]"
+if [[ -n "${PROFILE_FLAG}" ]]; then
+  profile_choice="${PROFILE_FLAG}"
+elif [[ "${ASSUME_YES}" -eq 1 ]]; then
+  profile_choice="${DEFAULT_PROFILE}"
+else
+  printf '  Profile [%s]: ' "${DEFAULT_PROFILE}"
+  read -r profile_choice
+  profile_choice="${profile_choice:-${DEFAULT_PROFILE}}"
+fi
+if [[ " ${PROFILE_NAMES[*]} " != *" ${profile_choice} "* ]]; then
+  echo "  Unknown profile '${profile_choice}', using ${DEFAULT_PROFILE}."
+  profile_choice="${DEFAULT_PROFILE}"
+fi
+# Rewrite the `dockerfile:` line in place (the template ships the key already
+# positioned with a descriptive comment block above it; we keep the comment and
+# only change the value, which also keeps re-init idempotent).
+TMP_OUT="$(mktemp)"
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  if [[ "${line}" =~ ^dockerfile: ]]; then
+    printf 'dockerfile: %s\n' "${profile_choice}"
+  else
+    printf '%s\n' "${line}"
+  fi
+done < "${CONFIG_FILE}" > "${TMP_OUT}"
+mv "${TMP_OUT}" "${CONFIG_FILE}"
+echo "  ✓ dockerfile: ${profile_choice}"
+echo ""
+
 # --- opencode.jsonc ---
-JSONC_FILE="${TARGET_DIR}/opencode.jsonc"
-JSONC_SOURCE="${SANDBOX_HOME}/init-templates/opencode.jsonc"
-echo "Step 3/5: Copy opencode.jsonc from the sandbox home to ${JSONC_FILE}."
+JSONC_FILE="${TARGET_DIR}/config/opencode.jsonc"
+JSONC_SOURCE="${SANDBOX_HOME}/config/opencode.jsonc"
+echo "Step 3/5: Copy config/opencode.jsonc from the sandbox home to ${JSONC_FILE}."
 echo "  This file configures the OpenCode model, provider, and permission policy."
 if [[ -f "${JSONC_FILE}" ]]; then
   echo "  Already exists — skipping."
 else
-  if confirm "  Copy opencode.jsonc?"; then
+  mkdir -p "${TARGET_DIR}/config"
+  if confirm "  Copy config/opencode.jsonc?"; then
     cp "${JSONC_SOURCE}" "${JSONC_FILE}"
     echo "  ✓ Copied."
   else
@@ -112,10 +228,16 @@ echo ""
 # --- rebuild the container ---
 echo "Step 5/5: Build the Docker container image for this project."
 echo "  This compiles the image using the Dockerfile in the sandbox home and"
-echo "  copies the mise.toml into the container build context."
-if confirm "  Run ocs-rebuild-container?"; then
+echo "  the derived build artifacts in ${OPENCODE_SANDBOX_DIR}."
+if [[ "${NO_BUILD}" -eq 1 ]]; then
+  echo "  Skipped (--no-build). Run 'ocs rebuild ${NAME}' when ready."
+elif confirm "  Build the container image (ocs rebuild)?"; then
   cd "${TARGET_DIR}"
   "${SCRIPT_DIR}/ocs-rebuild-container"
 else
-  echo "  Skipped. Run ocs-rebuild-container manually when ready."
+  echo "  Skipped. Run 'ocs rebuild' manually when ready."
 fi
+
+echo ""
+echo "Sandbox project ready at: ${TARGET_DIR}"
+echo "Next: ocs rebuild ${NAME} && ocs start ${NAME} | ocs run ${NAME} <prompt.md> | ocs tui ${NAME}"

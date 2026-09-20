@@ -2,12 +2,22 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Proxy: start squid and wait until it is ready
+# Proxy: start squid ONLY when outbound domains are whitelisted. With an empty
+# http-domain-whitelist there is no external server the agent needs to reach,
+# so we skip squid entirely (no squid process, no proxy env); the firewall
+# below still default-denies all other egress. Note: the SETUID/SETGID caps are
+# granted UNCONDITIONALLY by the host (see compute_cap_flags in bin/shared)
+# because every door drops root -> dev via gosu, which needs them regardless of
+# whether squid runs.
 # ---------------------------------------------------------------------------
-echo ">> starting squid proxy (squid startup messages below are expected)"
-squid
-timeout 30 bash -c 'until curl --silent --output /dev/null --max-time 1 http://127.0.0.1:3128; do sleep 0.2; done'
-echo ">> squid is ready"
+if [[ -s /etc/squid/squid-whitelist.txt ]]; then
+  echo ">> starting squid proxy (squid startup messages below are expected)"
+  squid
+  timeout 30 bash -c 'until curl --silent --output /dev/null --max-time 1 http://127.0.0.1:3128; do sleep 0.2; done'
+  echo ">> squid is ready"
+else
+  echo ">> no http-domain-whitelist -> skipping squid proxy (firewall-only egress)"
+fi
 
 # ---------------------------------------------------------------------------
 # Firewall: default-deny outbound traffic. Allow only what is required:
@@ -52,17 +62,32 @@ while IFS= read -r port || [[ -n "${port:-}" ]]; do
   iptables -A OUTPUT -d docker.host -p tcp --dport "${port}" -j ACCEPT
 done < /etc/host-ports.txt
 
+# Allow intranet ip:port endpoints (bypass the proxy) — one ip:port per line in /etc/intranet-endpoints.txt
+INTRANET_IPS=()
+while IFS= read -r endpoint || [[ -n "${endpoint:-}" ]]; do
+  [[ -z "${endpoint}" ]] && continue
+  iptables -A OUTPUT -d "${endpoint%%:*}" -p tcp --dport "${endpoint##*:}" -j ACCEPT
+  INTRANET_IPS+=("${endpoint%%:*}")
+done < /etc/intranet-endpoints.txt
+
 # ---------------------------------------------------------------------------
-# Environment: route outbound traffic through squid for all child processes
+# Environment: route outbound traffic through squid — only when squid is
+# active (a non-empty whitelist). When it is not active, no_proxy is left
+# unset so client tools talk directly (and only the firewall decides egress).
 # ---------------------------------------------------------------------------
-export http_proxy="http://127.0.0.1:3128"
-export https_proxy="http://127.0.0.1:3128"
-export HTTP_PROXY="http://127.0.0.1:3128"
-export HTTPS_PROXY="http://127.0.0.1:3128"
-_no_proxy_hosts="localhost,127.0.0.1,docker.host"
-[[ -n "${HOST_IP}" ]] && _no_proxy_hosts="${_no_proxy_hosts},${HOST_IP}"
-export no_proxy="${_no_proxy_hosts}"
-export NO_PROXY="${_no_proxy_hosts}"
+if [[ -s /etc/squid/squid-whitelist.txt ]]; then
+  export http_proxy="http://127.0.0.1:3128"
+  export https_proxy="http://127.0.0.1:3128"
+  export HTTP_PROXY="http://127.0.0.1:3128"
+  export HTTPS_PROXY="http://127.0.0.1:3128"
+  _no_proxy_hosts="localhost,127.0.0.1,docker.host"
+  [[ -n "${HOST_IP}" ]] && _no_proxy_hosts="${_no_proxy_hosts},${HOST_IP}"
+  for _ip in ${INTRANET_IPS[@]+"${INTRANET_IPS[@]}"}; do
+    _no_proxy_hosts="${_no_proxy_hosts},${_ip}"
+  done
+  export no_proxy="${_no_proxy_hosts}"
+  export NO_PROXY="${_no_proxy_hosts}"
+fi
 
 # ---------------------------------------------------------------------------
 # OpenCode credentials
@@ -73,25 +98,20 @@ export OPENCODE_SERVER_PASSWORD
 export OPENCODE_PORT
 
 # ---------------------------------------------------------------------------
-# Docker socket: match GID of mounted socket so dev user can access it
-# ---------------------------------------------------------------------------
-if [[ -S /var/run/docker.sock ]]; then
-  DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
-  if ! getent group "${DOCKER_GID}" > /dev/null 2>&1; then
-    groupadd -g "${DOCKER_GID}" docker
-  fi
-  usermod -aG "${DOCKER_GID}" dev
-fi
-
-# ---------------------------------------------------------------------------
-# Start OpenCode as the dev user (gosu drops root, env is inherited)
+# Start OpenCode as the dev user (gosu drops root, env is inherited).
+# - OPCODE_CMD set: run that command (used by ocs-interactive / ocs-run, which
+#   pin the model themselves), e.g. OPCODE_CMD='opencode' for the interactive TUI.
+# - OPCODE_CMD unset: default to the web server (ocs-start-container).
 # ---------------------------------------------------------------------------
 echo ">> start opencode"
 # SC2016: single quotes are intentional — expressions must expand in the dev user's shell, not root's
 # shellcheck disable=SC2016
 exec gosu dev bash -c '
   : "${WORKSPACE_DIR:?WORKSPACE_DIR is not set — was the container built without the WORKSPACE_DIR build arg?}"
-  mise trust --ignore "${WORKSPACE_DIR}/mise.toml"
-  eval "$(mise activate --shell bash)"
-  exec "$(mise where github:anomalyco/opencode)/opencode" web --mdns --port "${OPENCODE_PORT}"
+  cd "${WORKSPACE_DIR}"
+  if [[ -n "${OPCODE_CMD:-}" ]]; then
+    eval "${OPCODE_CMD}"
+  else
+    exec /usr/local/bin/opencode web --mdns --port "${OPENCODE_PORT:-4096}"
+  fi
 '

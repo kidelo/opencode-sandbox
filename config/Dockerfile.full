@@ -1,0 +1,483 @@
+FROM python:3.13-slim-bookworm
+
+ARG USER_ID
+ARG GROUP_ID
+ARG WORKSPACE_DIR=/workspace
+
+ENV WORKSPACE_DIR=${WORKSPACE_DIR} \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# ============================================================================
+# OS PACKAGES
+# ============================================================================
+#
+# Deliberately NOT installed (see AGENTS.md):
+#   sudo             — privilege-escalation tool; the agent-red-team test suite
+#                       treats "sudo: command not found" as the privilege block
+#   libreoffice*, pandoc, imagemagick, exiftool, jpegoptim, optipng,
+#   pngquant, webp, librsvg2-bin
+#                       — heavy native document/rendering tools
+#   gdal-bin, libgdal-dev, proj-bin, libproj-dev, libgeos-dev,
+#   libhdf5-dev, libnetcdf-dev, libopenblas-dev, liblapack-dev
+#                       — geospatial + HPC stack (wheels bundle BLAS)
+#   tshark, wireshark-common
+#                       — packet capture clashes with the sandbox firewall
+#   torch, tensorflow, jax, transformers, diffusers, accelerate,
+#   bitsandbytes, cupy, onnxruntime-gpu, nvidia-*, cuda-*
+#                       — GPU / deep-learning stack
+#   opencv*           — not needed for this sandbox
+#
+# ============================================================================
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        \
+        # --------------------------------------------------------------------
+        # Development / shell
+        # --------------------------------------------------------------------
+        build-essential \
+        pkg-config \
+        git \
+        curl \
+        wget \
+        ca-certificates \
+        shellcheck \
+        \
+        # --------------------------------------------------------------------
+        # CLI / search / file management
+        # --------------------------------------------------------------------
+        coreutils \
+        findutils \
+        file \
+        tree \
+        rename \
+        moreutils \
+        parallel \
+        fd-find \
+        ripgrep \
+        jq \
+        yq \
+        xmlstarlet \
+        \
+        # --------------------------------------------------------------------
+        # Data-processing CLI
+        # --------------------------------------------------------------------
+        csvkit \
+        miller \
+        \
+        # --------------------------------------------------------------------
+        # Archives / compression / file detection
+        # --------------------------------------------------------------------
+        tar \
+        gzip \
+        bzip2 \
+        xz-utils \
+        zstd \
+        lz4 \
+        zip \
+        unzip \
+        p7zip-full \
+        unrar-free \
+        libarchive-tools \
+        libmagic1 \
+        \
+        # --------------------------------------------------------------------
+        # User / process / sandbox
+        # --------------------------------------------------------------------
+        gosu \
+        procps \
+        psmisc \
+        \
+        # --------------------------------------------------------------------
+        # Networking / sandbox / proxy
+        # --------------------------------------------------------------------
+        squid \
+        iptables \
+        iproute2 \
+        net-tools \
+        dnsutils \
+        iputils-ping \
+        netcat-openbsd \
+        \
+        # --------------------------------------------------------------------
+        # MySQL / database clients
+        # --------------------------------------------------------------------
+        default-libmysqlclient-dev \
+        mariadb-client \
+        freetds-dev \
+        \
+        # --------------------------------------------------------------------
+        # PDF / document utilities
+        # --------------------------------------------------------------------
+        poppler-utils \
+        qpdf \
+        mupdf-tools \
+        ghostscript \
+        \
+        # --------------------------------------------------------------------
+        # OCR
+        # --------------------------------------------------------------------
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-deu \
+        tesseract-ocr-osd \
+        \
+        # --------------------------------------------------------------------
+        # Graphviz + fonts (for PDF / SVG / HTML rendering)
+        # --------------------------------------------------------------------
+        graphviz \
+        fonts-dejavu \
+        fonts-liberation \
+        fonts-liberation2 \
+        fonts-noto-core \
+        fonts-noto-cjk \
+        \
+        # --------------------------------------------------------------------
+        # XML / HTML native dependencies
+        # --------------------------------------------------------------------
+        libxml2-dev \
+        libxslt1-dev \
+        \
+        # --------------------------------------------------------------------
+        # WeasyPrint / cairosvg / PDF rendering
+        # --------------------------------------------------------------------
+        libpango-1.0-0 \
+        libpangoft2-1.0-0 \
+        libharfbuzz0b \
+        libharfbuzz-subset0 \
+        libfontconfig1 \
+        libfreetype6 \
+        libfreetype6-dev \
+        libffi-dev \
+        libcairo2 \
+        \
+        # --------------------------------------------------------------------
+        # Image / render native libs
+        # --------------------------------------------------------------------
+        libjpeg62-turbo \
+        libjpeg-dev \
+        libpng16-16 \
+        libpng-dev \
+        libtiff-dev \
+        libwebp-dev \
+        libopenjp2-7-dev \
+        libheif1 \
+        \
+    && rm -rf /var/lib/apt/lists/*
+
+# fd-find ships as `fdfind` on Debian; symlink so `fd` works out of the box.
+RUN if [ -x /usr/bin/fdfind ]; then \
+        ln -sf /usr/bin/fdfind /usr/local/bin/fd; \
+    fi
+
+# ============================================================================
+# PYTHON PACKAGES
+# ============================================================================
+#
+# General-purpose Python toolchain: data + office + PDF + HTML + OCR + ML.
+#
+# Intentionally NO:
+#   torch, tensorflow, jax, transformers, diffusers, accelerate,
+#   bitsandbytes, cupy, onnxruntime-gpu, nvidia-*, cuda-*
+#   xgboost — heavy gradient-boosting wheel; lightgbm covers the same use case
+#   pyxlsb  — Excel-2009-binary reader; xlcalculator + formulas cover xlsx
+#
+# ============================================================================
+
+RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && python -m pip install --no-cache-dir \
+        \
+        # --------------------------------------------------------------------
+        # DATABASES
+        # --------------------------------------------------------------------
+        mysqlclient \
+        PyMySQL \
+        SQLAlchemy \
+        alembic \
+        psycopg[binary] \
+        pymssql \
+        redis \
+        \
+        # --------------------------------------------------------------------
+        # DATA / TABLES
+        # --------------------------------------------------------------------
+        pandas \
+        scipy \
+        polars \
+        pyarrow \
+        pandera \
+        openpyxl \
+        xlsxwriter \
+        xlrd \
+        python-calamine \
+        xlsx2csv \
+        yearfrac==0.4.8 \
+        formulas \
+        xlcalculator \
+        pyexcel-io \
+        pyexcel-xlsx \
+        python-dateutil \
+        pytz \
+        tzdata \
+        \
+        # --------------------------------------------------------------------
+        # VALIDATION / SERIALIZATION / CONFIG
+        # --------------------------------------------------------------------
+        pydantic \
+        pydantic-settings \
+        PyYAML \
+        toml \
+        tomli \
+        orjson \
+        jsonschema \
+        jsonpath-ng \
+        jsonlines \
+        jmespath \
+        python-dotenv \
+        \
+        # --------------------------------------------------------------------
+        # HTTP / REST / API
+        # --------------------------------------------------------------------
+        requests \
+        httpx \
+        urllib3 \
+        aiohttp \
+        websockets \
+        \
+        # --------------------------------------------------------------------
+        # HTML / XML / SCRAPING
+        # --------------------------------------------------------------------
+        beautifulsoup4 \
+        lxml \
+        html5lib \
+        selectolax \
+        feedparser \
+        \
+        # --------------------------------------------------------------------
+        # PDF
+        # --------------------------------------------------------------------
+        pypdf \
+        pypdfium2 \
+        pdf2image \
+        PyMuPDF \
+        pdfplumber \
+        pdfminer.six \
+        pikepdf \
+        pdfrw \
+        borb \
+        reportlab \
+        weasyprint \
+        fpdf2 \
+        camelot-py \
+        \
+        # --------------------------------------------------------------------
+        # OCR
+        # --------------------------------------------------------------------
+        pytesseract \
+        \
+        # --------------------------------------------------------------------
+        # OFFICE — python only (no libreoffice/pandoc)
+        # --------------------------------------------------------------------
+        odfpy \
+        python-docx \
+        docx2txt \
+        mammoth \
+        docxcompose \
+        docxtpl \
+        python-docx-replace \
+        docx2python \
+        docx-mailmerge \
+        python-pptx \
+        pptx-tools \
+        markdown \
+        \
+        # --------------------------------------------------------------------
+        # IMAGES / SVG / DOCUMENT SUPPORT
+        # --------------------------------------------------------------------
+        Pillow \
+        qrcode \
+        cairosvg \
+        svglib \
+        \
+        # --------------------------------------------------------------------
+        # ARCHIVES / FILES
+        # --------------------------------------------------------------------
+        rarfile \
+        py7zr \
+        filetype \
+        python-magic \
+        \
+        # --------------------------------------------------------------------
+        # TEXT / PARSING / SEARCH
+        # --------------------------------------------------------------------
+        chardet \
+        charset-normalizer \
+        rapidfuzz \
+        python-slugify \
+        \
+        # --------------------------------------------------------------------
+        # CALENDAR / TIME
+        # --------------------------------------------------------------------
+        icalendar \
+        humanize \
+        \
+        # --------------------------------------------------------------------
+        # CLI / TERMINAL
+        # --------------------------------------------------------------------
+        rich \
+        tqdm \
+        click \
+        typer \
+        tabulate \
+        great-tables \
+        \
+        # --------------------------------------------------------------------
+        # RETRIES / FILE WATCHING / SYSTEM
+        # --------------------------------------------------------------------
+        tenacity \
+        watchdog \
+        psutil \
+        \
+        # --------------------------------------------------------------------
+        # SECURITY / CRYPTO / OFFICE-FILE PARSERS
+        # --------------------------------------------------------------------
+        cryptography \
+        bcrypt \
+        passlib \
+        msoffcrypto-tool \
+        olefile \
+        mail-parser \
+        extract-msg \
+        \
+        # --------------------------------------------------------------------
+        # MARKDOWN / HTML CONVERSIONS
+        # --------------------------------------------------------------------
+        markdown-it-py \
+        mistune \
+        markdownify \
+        html2text \
+        mdformat \
+        python-frontmatter \
+        markitdown \
+        \
+        # --------------------------------------------------------------------
+        # SCIENCE — cluster A: arrays / big-data
+        # --------------------------------------------------------------------
+        xarray \
+        dask \
+        zarr \
+        sparse \
+        numexpr \
+        \
+        # --------------------------------------------------------------------
+        # SCIENCE — cluster B: plotting
+        # --------------------------------------------------------------------
+        matplotlib \
+        seaborn \
+        plotly \
+        bokeh \
+        \
+        # --------------------------------------------------------------------
+        # SCIENCE — cluster C: classical ML (xgboost dropped)
+        # --------------------------------------------------------------------
+        scikit-learn \
+        statsmodels \
+        lightgbm
+
+# ============================================================================
+# USER
+# ============================================================================
+
+RUN if ! getent group ${GROUP_ID} > /dev/null 2>&1; then \
+    groupadd -g ${GROUP_ID} dev; \
+fi
+RUN existing_group=$(getent group ${GROUP_ID} | cut -d: -f1); \
+    if [ -z "${existing_group}" ]; then \
+      groupadd -g ${GROUP_ID} dev; \
+    elif [ "${existing_group}" != "dev" ]; then \
+      groupmod -n dev "${existing_group}"; \
+    fi
+
+RUN if ! getent passwd ${USER_ID} > /dev/null 2>&1; then \
+    useradd -m -l -u ${USER_ID} -g ${GROUP_ID} --shell /bin/bash dev; \
+fi
+RUN existing_user=$(getent passwd ${USER_ID} | cut -d: -f1); \
+    if [ -z "${existing_user}" ]; then \
+      useradd -m -l -u ${USER_ID} -g ${GROUP_ID} --shell /bin/bash dev; \
+    elif [ "${existing_user}" != "dev" ]; then \
+      usermod -l dev -d /home/dev -m "${existing_user}"; \
+    fi
+
+# ============================================================================
+# WORKSPACE / USER DIRECTORIES
+# ============================================================================
+# /etc/opencode is the mount point for config/opencode.jsonc (bound read-only
+# at run time; opencode reads it via $OPENCODE_CONFIG but cannot rewrite it).
+RUN mkdir -p /etc/opencode
+
+RUN mkdir -p \
+    "${WORKSPACE_DIR}" \
+    /home/dev/.local \
+    /home/dev/.config \
+    /home/dev/.cache \
+&& chown -R "${USER_ID}:${GROUP_ID}" \
+    "${WORKSPACE_DIR}" \
+    /home/dev/.local \
+    /home/dev/.config \
+    /home/dev/.cache
+
+# ============================================================================
+# OPENCODE
+# ============================================================================
+
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path \
+    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
+    && chown "${USER_ID}:${GROUP_ID}" /usr/local/bin/opencode \
+    && chmod a+rx /usr/local/bin/opencode
+
+# ============================================================================
+# HEADLESS XDG
+# ============================================================================
+
+RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
+    && chmod +x /usr/local/bin/xdg-open
+
+# ============================================================================
+# SQUID PROXY CONFIGURATION
+# ============================================================================
+
+COPY squid.conf /etc/squid/squid.conf
+COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
+
+# ============================================================================
+# FIREWALL CONFIGURATION
+# ============================================================================
+
+COPY host-ports.txt /etc/host-ports.txt
+COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
+
+# ============================================================================
+# OPENCODE PASSWORD / ENTRYPOINT
+# ============================================================================
+
+COPY opencode-password /opencode-password
+COPY entrypoint.sh /entrypoint.sh
+# The entrypoint (running as root) is the sole reader of this file — it seeds
+# OPENCODE_SERVER_PASSWORD, which gosu passes to dev as environment. dev never
+# reads the file itself. Keep it root-owned 0600 so the container does not need
+# the DAC_OVERRIDE capability (root can only read a dev-owned 0600 file via
+# DAC_OVERRIDE).
+RUN chown root:root /opencode-password \
+    && chmod 600 /opencode-password \
+    && chmod +x /entrypoint.sh
+
+# ============================================================================
+# FINAL
+# ============================================================================
+
+WORKDIR ${WORKSPACE_DIR}
+ENTRYPOINT ["/entrypoint.sh"]
