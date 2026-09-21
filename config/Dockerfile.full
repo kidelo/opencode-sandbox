@@ -459,6 +459,7 @@ COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
 
 COPY host-ports.txt /etc/host-ports.txt
 COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
+COPY agent-dns /etc/agent-dns
 
 # ============================================================================
 # OPENCODE PASSWORD / ENTRYPOINT

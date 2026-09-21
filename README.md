@@ -16,7 +16,8 @@ OpenCode is a powerful AI coding assistant — but by default it runs on your ho
 - 🧹 **Clean environment** — no bleed-over between projects; rebuild any time for a fresh start
 - 🛡️ **Network isolation** — every sandbox gets its own dedicated Docker network and an internal firewall; egress is proxy- or firewall-restricted, and the container is dropped to a non-root user
 - 🧱 **DoS-hardened** — fixed limits on memory, CPU, and process count plus `no-new-privileges`, so one sandbox can never take down the host
-- 🧪 **Verified** — a built-in 11-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress, resource limits active, and two running containers cannot see each other — **all blocked**
+- 🧲 **DNS-tunnel blocked** — the agent cannot use the resolver `127.0.0.11:53` as an exfil/C2 channel (uid-scoped drop; squid-uid and all IP-only endpoints unaffected — opt-in via `agent-dns: allow`)
+- 🧪 **Verified** — a built-in 12-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress, resource limits active, two running containers cannot see each other, and the DNS-tunnel gate is in the configured state — **all blocked/verified**
 
 **Quick start**
 
@@ -214,8 +215,8 @@ Runs the sandbox security test suite. **No running container needed** — `ocs t
 
 `ocs test` builds and runs from the **reserved** `config/Dockerfile.test` profile (a network-analysis image: `nmap`, `tcpdump`, DNS/traceroute tools, `python3`, `jq`). It is stored under its own tag `ocs-<SANDBOX_ID>-test`, so running the suite **never changes** the project's working image (built from `minimal` or `full`). The test image is cached for a fast re-run; it is removed on a fail/crash and by `ocs kill`.
 
-The suite has three kinds of checks (11 cases in total):
-- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network, that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, and that **resource limits** (memory, CPU, process count) plus `no-new-privileges` are actually enforced.
+The suite has three kinds of checks (12 cases in total):
+- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network, that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, that **resource limits** (memory, CPU, process count) plus `no-new-privileges` are actually enforced, and that the **DNS-tunnel gate** is configured as `agent-dns` states (dev-uid `:53` dropped while squid keeps its proxy path).
 - **Multi-container** — starts a real second container on a scratch network and asserts that the sandbox cannot resolve its name or connect to its IP: two running sandboxes never see each other.
 - **AI-agent red-team** — drives the configured model (via `opencode run`) to actively try six escapes (proxy bypass, direct egress, privilege escalation, root-file read, system write, secret read). The agent writes a JSON report to `/tmp` inside the container; the runner then fails if the agent reports any attack as `succeeded`.
 
@@ -294,7 +295,7 @@ Use it to discover the name to pass to other `ocs <command> <name>` invocations.
 
 ## Network isolation
 
-Isolation works on three levels:
+Isolation works on four levels:
 
 **1. Own Docker network (L2 separation).** Every sandbox container runs on a dedicated Docker network named `ocs-net-<SANDBOX_ID>`, created automatically on first use. All sandboxes get their addresses from the range configured under `sandbox-network-cidr` (default **`10.77.0.0/16`**, so containers live on `10.77.x.x`); each sandbox receives its own `/24` inside that range. Consequences:
 
@@ -307,6 +308,8 @@ Isolation works on three levels:
 All outbound traffic is routed via the proxy automatically through the standard `http_proxy` / `https_proxy` environment variables set by the container entrypoint.
 
 **3. Resource limits (host-DoS guard).** Every container run gets fixed, host-safe caps so a misbehaving or prompt-injected agent cannot exhaust the machine: memory `4g` (swap locked to the same value), CPU `2.0`, process count `256`, and `no-new-privileges` (setuid escalation is blocked even without any caps granted). The values are defaults set in `bin/shared` (`build_run_flags`); raise them there in `bin/shared` if a project needs more, then start your container again (no rebuild required — the limits are applied at run time, not baked into the image). These limits are asserted inside the container by `ocs test` (case 10).
+
+**4. DNS-tunnel gate (exfil/C2).** Docker's embedded resolver `127.0.0.11:53` is a forwarder to the internet — leaving it open to the agent is a working DNS-tunnel channel even though TCP egress is blocked. Therefore the **agent user's** `:53` egress is dropped by the entrypoint's firewall (uid-scoped, placed before the loopback rule where the tunnel lives). **Squid (proxy uid) is unaffected** and keeps its resolver for `http-domain-whitelist` domains. The gate is a top-level scalar `agent-dns: deny|allow` in `config/opencode-sandbox-config.yaml`, **default `deny`**. `allow` re-opens the tunnel *by explicit config choice* — use only when an endpoint is a hostname that must be resolved by the agent (e.g. a model `baseURL` that is not an IP). These rules + their positive counterpart (squid path is still usable) are verified by `ocs test` (case 12).
 
 > **Notes:** The container requires the `NET_ADMIN` Docker capability for `iptables` — this is added automatically by the run commands. The sandbox container can **not** talk to the host Docker daemon: no socket is mounted and no `docker`/`podman` CLI is installed. Two containers running in parallel (e.g. `ocs start` + `ocs tui`) provably cannot reach each other: `ocs test` starts a second "peer" container on a scratch network and verifies from inside the sandbox that neither its name resolves nor a connection to its IP succeeds (case 11).
 
@@ -334,6 +337,8 @@ host-ports:                   # disabled by default — add host TCP ports only 
 intranet-endpoints:
   - 10.0.0.5:3306
   - 192.168.1.10:8080
+
+agent-dns: deny          # deny (default) | allow — see below
 
 env-passthrough:
   ANTHROPIC_API_KEY: ANTHROPIC_API_KEY
@@ -393,6 +398,12 @@ env:
 - Use this for on-premises / intranet services not running on the host (internal databases, APIs, registries, …)
 - Each endpoint is allowlisted by the firewall and added to `no_proxy`, so clients connect to it directly without going through Squid
 - A rebuild is required after adding or removing entries
+
+**`agent-dns`** — gate (allow/deny) for the agent's own DNS egress (default: **`deny`**):
+- `deny` (default): the **agent user's** DNS egress (`:53` udp+tcp, IPv4+IPv6) is dropped by the container's firewall. This closes the DNS-exfil / C2 channel that Docker's built-in resolver (`127.0.0.11:53`) otherwise forwards to the internet. Endpoints must then be addressed **by IP** via `intranet-endpoints` / `host-ports` (not by hostname).
+- `allow`: the drop is removed — the agent can resolve hostnames. Use **only** when an endpoint is a hostname (e.g. a model `baseURL` that is not an IP). Note: this re-opens the DNS exfil/C2 channel *by your explicit choice*.
+- `squid` (proxy uid) is always unaffected: it keeps its own resolver for `http-domain-whitelist` domains regardless of this key.
+- A rebuild is required after changing this value (it is baked into the image at build time, then read at container start by the entrypoint).
 
 **`env-passthrough`** — host environment variables to forward into the container:
 - Format is `CONTAINER_VAR: HOST_VAR` — use the same name on both sides for a simple passthrough, or different names to rename

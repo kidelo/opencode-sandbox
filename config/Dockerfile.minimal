@@ -88,6 +88,7 @@ COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
 # --- firewall configuration ---------------------------------------------------
 COPY host-ports.txt /etc/host-ports.txt
 COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
+COPY agent-dns /etc/agent-dns
 
 # --- opencode password + entrypoint ------------------------------------------
 COPY opencode-password /opencode-password

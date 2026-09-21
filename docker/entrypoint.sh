@@ -37,6 +37,52 @@ ip6tables -F OUTPUT
 iptables  -P OUTPUT DROP
 ip6tables -P OUTPUT DROP
 
+# ---------------------------------------------------------------------------
+# DNS-tunnel mitigation: the AGENT (dev uid) must not be able to use Docker's
+# built-in resolver (127.0.0.11:53) as an exfil/C2 channel (DNS-tunnelling).
+#
+# Mechanism (verified in this project — see moby/moby#40515):
+#   Filter-table `-m owner --uid-owner <dev>` does NOT match DNS packets to
+#   127.0.0.11; the socket-owner context for that path is dockerd's resolver
+#   socket, not the sending agent's socket. So a filter-table DROP rule is
+#   useless here even when placed before `-o lo ACCEPT`.
+#   The nat-table, on the other hand, IS traversed for 127.0.0.11 traffic
+#   (Docker's own DOCKER_OUTPUT DNAT lives there), and its `-m owner` match
+#   DOES match the sending socket's uid. So we install our drop-equivalent
+#   in the nat table at the position where Docker already operates.
+#
+# We use "DNAT to 127.0.0.1:1" (UDP+TCP, v4) as the drop-equivalent: for the
+# agent's uid, all :53 egress to 127.0.0.11 is redirected to a dead local
+# socket — effectively a black-hole (no listener, no error visible to the
+# sender beyond timeout). The rule is scoped to the dev uid, so squid
+# (proxy uid) keeps its resolver access for whitelisted domains. IPv6 :53
+# (rarely used by the embedded resolver) is covered by the filter-table rules
+# below as a defence-in-depth belt.
+# Disabled by 'agent-dns: allow' in the project config (needed ONLY when an
+# endpoint is a hostname, e.g. the model baseURL).
+# ---------------------------------------------------------------------------
+AGENT_DNS="$(tr -d '[:space:]' < /etc/agent-dns 2>/dev/null || echo deny)"
+if [[ "${AGENT_DNS}" != "allow" ]]; then
+  DEV_UID="$(id -u dev)"
+  # Primary: nat-table, insert at the FRONT so we intercept before Docker's
+  # DOCKER_OUTPUT DNAT. Scoped to dev uid only. (Use DNAT-to-dead because
+  # iptables v1.8.9's nft backend refuses DROP in the nat table.)
+  iptables   -t nat -I OUTPUT 1 -d 127.0.0.11 -p udp --dport 53 -m owner --uid-owner "${DEV_UID}" -j DNAT --to-destination 127.0.0.1:1
+  iptables   -t nat -I OUTPUT 2 -d 127.0.0.11 -p tcp --dport 53 -m owner --uid-owner "${DEV_UID}" -j DNAT --to-destination 127.0.0.1:1
+  # IPv6 — Docker's embedded DNS is IPv4-only (127.0.0.11), but cover ::1
+  # as defence-in-depth.
+  ip6tables  -t nat -I OUTPUT 1 -d ::1 -p udp --dport 53 -m owner --uid-owner "${DEV_UID}" -j DNAT --to-destination ::1%lo:1 2>/dev/null || true
+  ip6tables  -t nat -I OUTPUT 2 -d ::1 -p tcp --dport 53 -m owner --uid-owner "${DEV_UID}" -j DNAT --to-destination ::1%lo:1 2>/dev/null || true
+  # Secondary (defence-in-depth, harmless if the nat rule already catches it):
+  iptables   -A OUTPUT -m owner --uid-owner "${DEV_UID}" -p udp --dport 53 -j DROP
+  iptables   -A OUTPUT -m owner --uid-owner "${DEV_UID}" -p tcp --dport 53 -j DROP
+  ip6tables  -A OUTPUT -m owner --uid-owner "${DEV_UID}" -p udp --dport 53 -j DROP
+  ip6tables  -A OUTPUT -m owner --uid-owner "${DEV_UID}" -p tcp --dport 53 -j DROP
+  echo ">> agent-DNS tunnel BLOCKED (dev uid ${DEV_UID} :53 to 127.0.0.11 black-holed via nat-table; filter-table DROP as backup)"
+else
+  echo ">> agent-DNS tunnel OPEN (agent-dns: allow — explicit config choice)"
+fi
+
 # Allow loopback (needed for proxy connections to squid on 127.0.0.1:3128)
 iptables  -A OUTPUT -o lo -j ACCEPT
 ip6tables -A OUTPUT -o lo -j ACCEPT

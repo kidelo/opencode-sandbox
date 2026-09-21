@@ -197,13 +197,16 @@ host-ports:                     # disabled by default — no host TCP ports reac
 intranet-endpoints:             # ip:port services reachable directly (no proxy)
   - 192.168.0.10:11434          #   e.g. your on-prem Ollama / database (use your own)
 
+agent-dns: deny                 # deny (default) = no DNS exfil channel; allow = agent may resolve hostnames
+
 env-passthrough:                # host env → container (values read at start time)
   GH_TOKEN: GH_TOKEN
 ```
 
 - **`http-domain-whitelist`** — domains the Squid proxy will forward. **Empty by default — nothing is allowed until you add a domain.** A leading dot covers subdomains.
 - **`host-ports`** — for databases/servers on the host machine. **Disabled by default (empty)**; add ports only if needed. Use the hostname `docker.host` (not `localhost`) inside the container.
-- **`intranet-endpoints`** — for on-prem services on other machines. This must include your model endpoint or the agent cannot reach it (see `ocs test` SKIP hint).
+- **`intranet-endpoints`** — for on-prem services on other machines. This must include your model endpoint or the agent cannot reach it (see `ocs test` SKIP hint). Endpoints are `ip:port` **by design** — the agent's own DNS is denied by default (`agent-dns: deny`), so nothing inside the container may rely on hostname resolution for endpoints.
+- **`agent-dns`** — `deny` (default) or `allow`. `deny` is the secure path (no DNS exfil/C2 channel); `allow` re-opens the resolver for the agent — only turn this on when an endpoint must be a hostname (e.g. model `baseURL`).
 - **`env-passthrough` / `env`** — credentials (via passthrough, never a file) and non-secret context (via `env`).
 - **`sandbox-network-cidr`** — the private range all your sandboxes draw from; each sandbox gets its own `/24` inside it, L2-separated from the others.
 
@@ -250,6 +253,7 @@ If it contains secrets, add it to `.gitignore`.
 
 - **"port is already allocated"** — two sandboxes are using the same `opencode-port`. Use different ports, or switch to the portless one-shot modes.
 - **Agent case SKIPs in `ocs test`** — the model endpoint (your Ollama `ip:port`) is not reachable from the container. Add it to `intranet-endpoints` in `config/opencode-sandbox-config.yaml` and rebuild.
+- **The agent cannot resolve a hostname (DNS "no answer"/timeout)** — expected with the default `agent-dns: deny` (the DNS exfil/C2 channel is closed). Two options: address the endpoint by IP (`intranet-endpoints: - ip:port`, and give the model `baseURL` an IP), or set `agent-dns: allow` in the config and rebuild if you accept the DNS exfil risk.
 - **A test case FAILed and the image vanished** — by design. `ocs rebuild` brings it back.
 - **Container runs out of memory / is killed (OOM) or feels CPU-limited** — every sandbox runs with host-DoS guards by default: `--memory=4g --cpus=2.0 --pids-limit=256 --security-opt=no-new-privileges:true` (see README → Network isolation). Raise the values in `bin/shared` (`build_run_flags`) and start again — no rebuild needed.
 - **`ocs test` case 11 says "peer container not started"** — the runner could not bring up the second isolation-check container (e.g. image missing or runtime hiccup). Re-run `ocs test`; the deterministic cases are unaffected.

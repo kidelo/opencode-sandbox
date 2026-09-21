@@ -9,6 +9,17 @@ sandbox-name: opencode-sandbox
 # workspace. Source code + the data directory both live in this dir.
 workspace: .
 
+# Agent DNS: allow | deny  (default: deny).
+#   deny  — the AGENT (dev user)'s DNS egress (:53) is dropped by the
+#           firewall. No DNS-tunnel / exfil / C2 channel. Endpoints must
+#           be addressed by IP (intranet-endpoints / host-ports).
+#   allow — dev-DNS is NOT dropped. Use only when an endpoint is a
+#           hostname (e.g. the model baseURL); the DNS exfil/C2 channel
+#           is OPEN BY YOUR EXPLICIT CHOICE.
+# Squid (proxy uid) is unaffected in either mode — it keeps its resolver
+# for whitelisted domains. Requires a rebuild.
+agent-dns: deny
+
 # HTTP port used by the OpenCode server and host clients.
 opencode-port: 4096
 
@@ -49,7 +60,7 @@ intranet-endpoints:
   # - 10.0.0.5:3306
   # Example: your local model server (Ollama etc.) — fill in your own ip:port,
   # then run `ocs rebuild`.
-  # - 192.168.0.10:11434
+  - 192.168.0.139:11434
 
 # Host env vars forwarded into the container.
 # Both key and value are required: CONTAINER_VAR: HOST_VAR

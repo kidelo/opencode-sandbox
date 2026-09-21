@@ -83,6 +83,7 @@ if "${CONTAINER_RUNTIME}" run -d --init \
     fi
     sleep 0.5
   done
+  # shellcheck disable=SC2016  # $n/$c are docker Go-template vars, not shell
   PEER_IP="$("${CONTAINER_RUNTIME}" inspect -f '{{range $n, $c := .NetworkSettings.Networks}}{{$c.IPAddress}} {{end}}' "${PEER_NAME}" 2>/dev/null | awk '{print $1}')"
 fi
 if [[ "${PEER_STARTED}" -eq 1 ]]; then
