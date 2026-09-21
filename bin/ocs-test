@@ -34,10 +34,52 @@ EXTRA_TEST_MOUNTS=(
 # Dockerfile.minimal). If the test image is not present locally, ocs-test
 # rebuilds it via `ocs-rebuild-container` with `OPENCODE_DOCKERFILE_OVERRIDE=test`.
 
+# ---------------------------------------------------------------------------
+# Test-harness egress targets. The TEST image (Dockerfile.test) bakes two
+# positive-egress targets into its allow-lists via build args, so cases can
+# verify that a LISTED endpoint is actually reachable (not only that
+# unlisted ones are blocked):
+#   EP   — <subnet>.50 on this sandbox network : HARNESS_EP_PORT
+#          (served by a listener container; tests intranet-endpoints)
+#   HOST — host-published port HARNESS_HOST_PORT, reached via docker.host
+#          (served by a listener container; tests host-ports)
+# These rules exist ONLY in the -test image (reserved profile, removed after
+# each run) — the working image and its firewall are unaffected.
+# ---------------------------------------------------------------------------
 TEST_IMAGE="${CONTAINER_NAME}-test"
-if ! "${CONTAINER_RUNTIME}" image inspect "${TEST_IMAGE}" >/dev/null 2>&1; then
-  echo "Building test image (Dockerfile.test) — this may take a moment ..."
-  if ! env OPENCODE_DOCKERFILE_OVERRIDE=test "${SCRIPT_DIR}/ocs-rebuild-container"; then
+SANDBOX_NET="ocs-net-${SANDBOX_ID}"
+SUBNET="$(derive_sandbox_subnet)" || {
+  echo "ERROR: could not derive the sandbox subnet (see above)." >&2
+  exit 1
+}
+HARNESS_EP_PORT="${HARNESS_EP_PORT:-8765}"
+HARNESS_HOST_PORT="${HARNESS_HOST_PORT:-8766}"
+SUBNET_BASE="${SUBNET%/*}"
+EP_IP="${SUBNET_BASE%.0}.50"
+# ocs-test-api: manually-bumped harness API version, asserted by
+# image_is_current before the cached test image is reused. Bump when the
+# harness mechanism changes (e.g. v2 added the multi-port listener and
+# the +1 contrast port; v3 ships the entrypoint fix that skips the
+# host-port ACCEPT rules when docker.host is unresolved) so stale
+# cached test images get rebuilt.
+TEST_API="3"
+HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API}"
+
+# Rebuild only when the cached image is missing or was built before the
+# current harness API (label ocs-test-api) or for a different harness
+# endpoint (label ocs-harness-ep). Bump TEST_API whenever the harness
+# mechanism changes so stale cached test images are rebuilt. A current
+# image is reused, keeping re-runs fast (cached-on-pass behaviour).
+image_is_current() {
+  local ep api
+  ep="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-harness-ep"}}' "${TEST_IMAGE}" 2>/dev/null)"
+  api="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-test-api"}}' "${TEST_IMAGE}" 2>/dev/null)"
+  [[ "${ep}" == "${EP_IP}" && "${api}" == "${TEST_API}" ]]
+}
+
+if ! "${CONTAINER_RUNTIME}" image inspect "${TEST_IMAGE}" >/dev/null 2>&1 || ! image_is_current; then
+  echo "Building test image (Dockerfile.test, harness ep ${EP_IP}:${HARNESS_EP_PORT}) — this may take a moment ..."
+  if ! env OPENCODE_DOCKERFILE_OVERRIDE=test EXTRA_BUILD_ARGS="${HARNESS_ARGS}" "${SCRIPT_DIR}/ocs-rebuild-container"; then
     echo "ERROR: failed to build test image '${TEST_IMAGE}'." >&2
     exit 1
   fi
@@ -98,14 +140,99 @@ stop_and_remove_peer() {
   "${CONTAINER_RUNTIME}" network rm "${PEER_NET}" >/dev/null 2>&1 || true
 }
 
-trap 'stop_and_remove_peer; echo; "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true' EXIT
+# ---------------------------------------------------------------------------
+# Positive-egress listeners. Each serves one baked allow-rule so a case can
+# prove a LISTED endpoint is reachable (and its unlisted neighbour is not):
+#   EP listener   — on the sandbox net at EP_IP : HARNESS_EP_PORT
+#                   (tests intranet-endpoints; reachable from the test
+#                   container only via the baked intranet ACCEPT rule)
+#   HOST listener — host-published HARNESS_HOST_PORT, reached as
+#                   docker.host (tests host-ports)
+# Both are the -test image; OPCODE_CMD runs the harness listener baked into
+# the image at /opt/ocs-test/listener.py (a connect-and-close accept loop) so
+# the listeners need no host files. Cleaned up before the test image is
+# removed (they use it). If one fails to start, its case SKIPs.
+# ---------------------------------------------------------------------------
+LST_EP_NAME="${CONTAINER_NAME}-lst-ep-$$"
+LST_HOST_NAME="${CONTAINER_NAME}-lst-host-$$"
+EP_LISTENER_UP=0
+HOST_LISTENER_UP=0
+if "${CONTAINER_RUNTIME}" run -d --init \
+  --name "${LST_EP_NAME}" \
+  --network "${SANDBOX_NET}" \
+  --ip "${EP_IP}" \
+  --memory=1g --memory-swap=1g --cpus=1.0 --pids-limit=64 \
+  --security-opt=no-new-privileges:true \
+  --cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID \
+  -e "OPCODE_CMD=python3 /opt/ocs-test/listener.py ${HARNESS_EP_PORT} $((HARNESS_EP_PORT + 1))" \
+  "${TEST_IMAGE}" >/dev/null 2>&1; then
+  EP_LISTENER_UP=1
+fi
+if "${CONTAINER_RUNTIME}" run -d --init \
+  --name "${LST_HOST_NAME}" \
+  -p "${HARNESS_HOST_PORT}:${HARNESS_HOST_PORT}" \
+  -p "$((HARNESS_HOST_PORT + 1)):$((HARNESS_HOST_PORT + 1))" \
+  --memory=1g --memory-swap=1g --cpus=1.0 --pids-limit=64 \
+  --security-opt=no-new-privileges:true \
+  --cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID \
+  -e "OPCODE_CMD=python3 /opt/ocs-test/listener.py ${HARNESS_HOST_PORT} $((HARNESS_HOST_PORT + 1))" \
+  "${TEST_IMAGE}" >/dev/null 2>&1; then
+  HOST_LISTENER_UP=1
+fi
+# The listeners run the entrypoint (firewall + root->dev drop) before the
+# OPCODE_CMD; give it a moment to reach the accept loop.
+sleep 2
+if [[ "${EP_LISTENER_UP}" -eq 1 ]]; then
+  echo "Started intranet-endpoint listener ${LST_EP_NAME} (${EP_IP}:${HARNESS_EP_PORT}) for case 15"
+else
+  echo "WARNING: intranet listener could not be started — case 15 will SKIP"
+fi
+if [[ "${HOST_LISTENER_UP}" -eq 1 ]]; then
+  echo "Started host-port listener ${LST_HOST_NAME} (host:${HARNESS_HOST_PORT}) for case 16"
+else
+  echo "WARNING: host-port listener could not be started — case 16 will SKIP"
+fi
+
+stop_and_remove_listeners() {
+  "${CONTAINER_RUNTIME}" stop "${LST_EP_NAME}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" rm -f "${LST_EP_NAME}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" stop "${LST_HOST_NAME}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" rm -f "${LST_HOST_NAME}" >/dev/null 2>&1 || true
+  rm -rf -- "${FWD_MOUNT_DIR}" 2>/dev/null || true
+}
+
+trap 'stop_and_remove_peer; stop_and_remove_listeners; echo; "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true' EXIT
 
 CIDR="$(tr -d '[:space:]' < "${SANDBOX_CIDR_FILE}" 2>/dev/null || echo 10.77.0.0/16)"
+
+# Runner-injected sentinels (test 13/14/15/16/19): proof that the run-door
+# wiring (env passthrough, extra volume mounts, harness endpoints, port) is
+# exercised with values this run controls — independent of the project's own
+# config. FWD_SENTINEL is a random value (asserts exact forwarding); the
+# others are fixed (documented in the cases).
+sentinel_hex="$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n' 2>/dev/null || true)"
+if [[ -n "${sentinel_hex}" ]]; then
+  FWD_SENTINEL="ocs-fwd-${sentinel_hex}"
+else
+  FWD_SENTINEL="ocs-fwd-static"
+fi
+FWD_MOUNT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ocs-fwd.XXXXXX")"
+chmod u=rwx,go= "${FWD_MOUNT_DIR}"
+
 "${CONTAINER_RUNTIME}" run -d --init \
   --name "${TEST_CONTAINER}" \
   -w /workspace \
   -e "OPCODE_CMD=sleep infinity" \
   -e "SANDBOX_NETWORK_CIDR=${CIDR}" \
+  -e "FWD_TEST_SENTINEL=${FWD_SENTINEL}" \
+  -e "FWD_TEST_STATIC=ocs-static" \
+  -e "OPENCODE_PORT=${PORT}" \
+  -e "HARNESS_EP_IP=${EP_IP}" \
+  -e "HARNESS_EP_PORT=${HARNESS_EP_PORT}" \
+  -e "HARNESS_HOST_PORT=${HARNESS_HOST_PORT}" \
+  -e "EP_LISTENER_UP=${EP_LISTENER_UP}" \
+  -e "HOST_LISTENER_UP=${HOST_LISTENER_UP}" \
+  -v "${FWD_MOUNT_DIR}:/mnt/ocs-fwd:rw" \
   "${EXTRA_TEST_MOUNTS[@]}" \
   "${RUN_FLAGS[@]}" \
   "${TEST_IMAGE}"
@@ -160,6 +287,7 @@ if [[ ${fail_count} -gt 0 ]]; then
   echo "      (inspect the case output above for escape evidence)"
   trap - EXIT
   stop_and_remove_peer
+  stop_and_remove_listeners
   "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true
   "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true
   "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true
@@ -168,6 +296,7 @@ if [[ ${fail_count} -gt 0 ]]; then
 fi
 trap - EXIT
 stop_and_remove_peer
+stop_and_remove_listeners
 "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true
 "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true
 echo "all security checks passed"

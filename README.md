@@ -215,12 +215,14 @@ Runs the sandbox security test suite. **No running container needed** — `ocs t
 
 `ocs test` builds and runs from the **reserved** `config/Dockerfile.test` profile (a network-analysis image: `nmap`, `tcpdump`, DNS/traceroute tools, `python3`, `jq`). It is stored under its own tag `ocs-<SANDBOX_ID>-test`, so running the suite **never changes** the project's working image (built from `minimal` or `full`). The test image is cached for a fast re-run; it is removed on a fail/crash and by `ocs kill`.
 
-The suite has three kinds of checks (12 cases in total):
-- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network, that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, that **resource limits** (memory, CPU, process count) plus `no-new-privileges` are actually enforced, and that the **DNS-tunnel gate** is configured as `agent-dns` states (dev-uid `:53` dropped while squid keeps its proxy path).
+The suite has four kinds of checks (21 cases in total):
+- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network (its own `/24` inside `sandbox-network-cidr`), that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, that **resource limits** (memory, CPU, process count) plus `no-new-privileges` are actually enforced, that the **DNS-tunnel gate** is configured as `agent-dns` states (dev-uid `:53` dropped while squid keeps its proxy path), that `config/opencode.jsonc` is mounted read-only, that `/workspace` is the writable dir, that the configured `opencode-port` reaches the run environment, and that squid is running exactly when `http-domain-whitelist` is non-empty (state consistency).
+- **Positive egress (the allowed path works)** — proves a **listed** endpoint is actually reachable, not only that unlisted ones are blocked: `ocs test` bakes two harness targets into the *test image only* (via build args in `Dockerfile.test`) and starts short-lived listener containers for them — an **intranet endpoint** `<sandbox-net>.50:8765` (the case must connect to it, and to the adjacent unlisted port it must *not* be able to) and a **host port** `docker.host:8766` (same positive/negative contrast). These rules exist only in the `ocs-<SANDBOX_ID>-test` image and its two listener containers, both removed with the test image — the working image's firewall is never changed.
+- **Run-wiring (env / mounts)** — `ocs test` injects a random sentinel env var (and a fixed one) and a temp dir mounted read-write at `/mnt/ocs-fwd`, and the cases assert both arrive intact and writable in the container: the same `-e` / `-v` plumbing used by `env-passthrough` / `env` / `volume-mounts`.
 - **Multi-container** — starts a real second container on a scratch network and asserts that the sandbox cannot resolve its name or connect to its IP: two running sandboxes never see each other.
 - **AI-agent red-team** — drives the configured model (via `opencode run`) to actively try six escapes (proxy bypass, direct egress, privilege escalation, root-file read, system write, secret read). The agent writes a JSON report to `/tmp` inside the container; the runner then fails if the agent reports any attack as `succeeded`.
 
-If the AI-agent case cannot reach the configured model endpoint (e.g. the Ollama server's `ip:port` is not in `intranet-endpoints`), it SKIPs with a hint; the deterministic cases still provide the security signal.
+If a case's optional dependency is unavailable (the AI-agent case cannot reach the configured model endpoint, a listener could not be started, a tool is missing in the image, …), it SKIPs with a hint; the deterministic cases still provide the security signal.
 
 > **Note:** On a **pass** the test image (`ocs-<SANDBOX_ID>-test`) is kept so a re-run is fast; on a **fail** (or crash) it is removed so only known-good builds remain. The working image (`ocs-<SANDBOX_ID>`) is untouched either way. `ocs clean` / `ocs kill` remove the test image too.
 
@@ -484,7 +486,8 @@ opencode-sandbox/
 ├── sandboxes/                  # New sandbox projects (created by ocs init) — gitignored by default
 ├── test/
 │   ├── common.sh               # Helpers shared by test cases (pass/fail, tcp_connect)
-│   └── cases/                  # Individual security test cases (01-09)
+│   ├── listener.py             # Positive-egress listener for cases 15/16 (baked into the test image)
+│   └── cases/                  # Individual security test cases (01-21)
 ├── README.md                   # This file — reference & design rationale
 ├── HOWTO.md                    # Step-by-step setup and run guide
 ├── AGENTS.md                   # Conventions for contributors working on the sandbox itself

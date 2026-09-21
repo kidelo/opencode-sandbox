@@ -19,6 +19,18 @@ FROM python:3.13-slim-bookworm
 ARG USER_ID
 ARG GROUP_ID
 ARG WORKSPACE_DIR=/workspace
+# --- test-harness egress targets (TEST image only, never selectable) -------
+# ocs-test builds this image with these args so the image itself declares the
+# egress targets whose allow-rules it will test (baked by the entrypoint from
+# /etc/intranet-endpoints.txt and /etc/host-ports.txt into iptables):
+#   HARNESS_EP_IP/HARNESS_EP_PORT  — the sandbox-net IP:port of the runner's
+#                                    intranet endpoint listener container.
+#   HARNESS_HOST_PORT              — the host-published port of the runner's
+#                                    host-ports listener (reached via docker.host).
+# Absent/empty args add nothing — the image behaves like the profiles.
+ARG HARNESS_EP_IP=""
+ARG HARNESS_EP_PORT=8765
+ARG HARNESS_HOST_PORT=8766
 
 ENV WORKSPACE_DIR=${WORKSPACE_DIR} \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -85,6 +97,28 @@ COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
 COPY host-ports.txt /etc/host-ports.txt
 COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
 COPY agent-dns /etc/agent-dns
+
+# --- test-harness egress targets (baked from the build args above) -----------
+# Appended to the allow-lists the entrypoint reads at start, so this TEST image
+# alone can be reached at the runner's positive-egress targets. The working
+# profiles (minimal/full) never set these args — they stay empty — so this can
+# never leak into a project's working image or its firewall.
+RUN if [ -n "${HARNESS_EP_IP}" ]; then \
+        echo "${HARNESS_EP_IP}:${HARNESS_EP_PORT}" >> /etc/intranet-endpoints.txt; \
+    fi && \
+    if [ -n "${HARNESS_HOST_PORT}" ]; then \
+        echo "${HARNESS_HOST_PORT}" >> /etc/host-ports.txt; \
+    fi
+# Landing dir for the volume-mount test case (case 14).
+RUN mkdir -p /mnt/ocs-fwd && chown "${USER_ID}:${GROUP_ID}" /mnt/ocs-fwd
+
+# --- ocs test harness listener ------------------------------------------------
+# Baked in (by ocs-rebuild-container, which COPYs it into the build context
+# ONLY for the test profile) so the runner's positive-egress listener
+# containers can run it via OPCODE_CMD without any host-side mount:
+#   OPCODE_CMD="python3 /opt/ocs-test/listener.py <port>"
+COPY listener.py /opt/ocs-test/listener.py
+RUN chmod 0644 /opt/ocs-test/listener.py
 
 # --- opencode password + entrypoint ------------------------------------------
 COPY opencode-password /opencode-password

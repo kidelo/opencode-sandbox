@@ -214,14 +214,33 @@ printf '%s\n' "${DOCKERFILE_NAME}" > "${OPENCODE_SANDBOX_DIR}/dockerfile-name"
 BUILD_IMAGE_TAG="${CONTAINER_NAME}"
 if [[ "${DOCKERFILE_NAME}" == "test" ]]; then
   BUILD_IMAGE_TAG="${CONTAINER_NAME}-test"
+  # ocs test's harness listener is baked into the test image (Dockerfile.test
+  # COPYs it). Place it in the per-profile build context so the runner's
+  # listener containers need no host files.
+  cp "${SANDBOX_HOME}/test/listener.py" "${OPENCODE_SANDBOX_DIR}/listener.py"
 fi
 
 echo "Building Container Image '${BUILD_IMAGE_TAG}' from Dockerfile.${DOCKERFILE_NAME} (USER_ID=${USER_ID} GROUP_ID=${GROUP_ID})..."
 BUILD_LOG="${OPENCODE_SANDBOX_DIR}/docker-build.log"
 
+# Optional caller-supplied build flags (space-separated string, e.g.
+# "--build-arg HARNESS_EP_IP=10.77.5.50 --label ocs-harness-ep=10.77.5.50
+# --label ocs-test-api=1"). Used by ocs-test to bake its harness egress
+# targets into the TEST image. Default: empty — behaviour unchanged.
+EXTRA_BUILD_ARGS="${EXTRA_BUILD_ARGS:-}"
+
+# Split into a proper array. Word-splitting here is REQUIRED (callers pass
+# space-separated flags) and globbing is disabled via set -f so no flag can
+# ever expand against the current directory.
+set -f
+# shellcheck disable=SC2206  # word-splitting is the point; set -f guards globbing
+EXTRA_ARGS_ARRAY=(${EXTRA_BUILD_ARGS})
+set +f
+
 if "${CONTAINER_RUNTIME}" build \
   --build-arg "USER_ID=${USER_ID}" \
   --build-arg "GROUP_ID=${GROUP_ID}" \
+  ${EXTRA_ARGS_ARRAY[@]+"${EXTRA_ARGS_ARRAY[@]}"} \
   -t "${BUILD_IMAGE_TAG}" \
   -f "${DOCKERFILE_PATH}" \
   "${OPENCODE_SANDBOX_DIR}" > "${BUILD_LOG}" 2>&1; then

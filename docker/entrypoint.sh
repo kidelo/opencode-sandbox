@@ -101,12 +101,18 @@ iptables  -A OUTPUT -m owner --uid-owner proxy -p tcp --dport 443 -j ACCEPT
 ip6tables -A OUTPUT -m owner --uid-owner proxy -p tcp --dport 80  -j ACCEPT
 ip6tables -A OUTPUT -m owner --uid-owner proxy -p tcp --dport 443 -j ACCEPT
 
-# Allow host TCP ports (databases etc.) — one port number per line in /etc/host-ports.txt
+# Allow host TCP ports (databases etc.) — one port number per line in /etc/host-ports.txt.
+# Rules target a CONCRETE IP (docker.host resolves to the host gateway) so the
+# entrypoint never depends on iptables' own hostname resolution. If docker.host
+# is not resolvable in this container (e.g. a helper container started without
+# --add-host=docker.host), skip the host-port rules entirely instead of letting
+# set -e abort startup.
 HOST_IP=$(getent hosts docker.host 2>/dev/null | awk '$1 ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print $1; exit}' || true)
-
-while IFS= read -r port || [[ -n "${port:-}" ]]; do
-  iptables -A OUTPUT -d docker.host -p tcp --dport "${port}" -j ACCEPT
-done < /etc/host-ports.txt
+if [[ -n "${HOST_IP:-}" ]]; then
+  while IFS= read -r port || [[ -n "${port:-}" ]]; do
+    iptables -A OUTPUT -d "${HOST_IP}" -p tcp --dport "${port}" -j ACCEPT
+  done < /etc/host-ports.txt
+fi
 
 # Allow intranet ip:port endpoints (bypass the proxy) — one ip:port per line in /etc/intranet-endpoints.txt
 INTRANET_IPS=()

@@ -50,3 +50,26 @@ expect_ok() {
     fail "${desc} — command unexpectedly failed: $*"
   fi
 }
+
+# SKIP unless every named tool is available. Usage: have nc python3
+have() {
+  local tool
+  for tool in "$@"; do
+    if ! command -v "${tool}" >/dev/null 2>&1; then
+      echo "SKIP: required tool '${tool}' not available in this image"
+      exit 0
+    fi
+  done
+}
+
+# SKIP unless every named env var is set and non-empty (runner-provided values).
+# Usage: skip_if_empty HARNESS_EP_IP HARNESS_EP_PORT
+skip_if_empty() {
+  local var
+  for var in "$@"; do
+    if [[ -z "${!var:-}" ]]; then
+      echo "SKIP: runner did not provide \${${var}} (optional dependency not active)"
+      exit 0
+    fi
+  done
+}
