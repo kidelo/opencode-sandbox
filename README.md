@@ -321,7 +321,7 @@ All outbound traffic is routed via the proxy automatically through the standard 
 
 The `config/opencode-sandbox-config.yaml` file (in the `config/` directory of your project) controls the project name, OpenCode HTTP port, outbound network access, and environment variables. It is safe to commit (alongside `config/opencode.jsonc`).
 
-> **Note:** Only a narrow YAML subset is supported: top-level keys, one-level-deep list items (`- value`), and one-level-deep map entries (`key: value`). Anchors, multi-line strings, nested structures, and other YAML features are not supported.
+> **Note:** Only a narrow YAML subset is supported: top-level keys, one-level-deep list items (`- value`), and one-level-deep map entries (`key: value`). Anchors, multi-line strings, nested structures, and other YAML features are not supported. Inline comments are stripped from every value (`  - 5432 # postgres` → `5432`, `  TOKEN: HOST_TOKEN # note` → `TOKEN=HOST_TOKEN`); comment-only items are skipped. Do not rely on a `#` in a value reaching the extracted artifacts.
 
 ```yaml
 sandbox-name: my-project
@@ -394,11 +394,14 @@ env:
 - **Disabled by default** — the list ships empty, so the container cannot reach any host port until you add one.
 - Use this for databases, local dev servers, and other services running on the host
 - The host is reachable via `docker.host` (injected automatically at container start) — use this hostname instead of `localhost`
+- Inline comments are stripped from each entry (`  - 5432 # postgres` → `5432`); a comment-only line (`  - # note`) is skipped
+- A rebuild is required after adding or removing entries
 
 **`intranet-endpoints`** — `ip:port` endpoints the container may connect to directly (bypasses the proxy):
 - Format is `ipv4:port` per line, e.g. `10.0.0.5:3306` or `192.168.1.10:8080` — each octet must be `0–255`, port `1–65535` (a malformed entry, e.g. `999.999.999.999:80`, is rejected at `ocs rebuild` with a clear error instead of aborting the container at start)
 - Use this for on-premises / intranet services not running on the host (internal databases, APIs, registries, …)
 - Each endpoint is allowlisted by the firewall and added to `no_proxy`, so clients connect to it directly without going through Squid
+- Inline comments are stripped from each entry (`  - 10.0.0.5:3306 # db` → `10.0.0.5:3306`); a comment-only line (`  - # note`) is skipped
 - A rebuild is required after adding or removing entries
 
 **`agent-dns`** — gate (allow/deny) for the agent's own DNS egress (default: **`deny`**):
@@ -411,6 +414,7 @@ env:
 - Format is `CONTAINER_VAR: HOST_VAR` — use the same name on both sides for a simple passthrough, or different names to rename
 - Values are read from the host shell at container start time; variables not set on the host are skipped and noted in the startup summary
 - Use this for secrets and credentials — values never touch a file
+- Inline comments are stripped from each entry (`  TOKEN: HOST_TOKEN # note` → `TOKEN=HOST_TOKEN`)
 - A rebuild is required after adding or removing entries
 
 **`env`** — static environment variables set directly in the container:
