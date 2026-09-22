@@ -534,6 +534,13 @@ build_run_flags() {
       [[ -z "${entry}" ]] && continue
       local container_name="${entry%%=*}"
       local host_name="${entry#*=}"
+      # Defense in depth: skip (not crash) any entry whose host-side name is
+      # not a valid shell variable name — a stray inline comment or other
+      # malformed value must never take every container start down with it.
+      if [[ ! "${host_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        RUN_LOG+=("    env: ${container_name} (skipped — invalid host variable name '\${${host_name}}')")
+        continue
+      fi
       if [[ -n "${!host_name+set}" ]]; then
         RUN_FLAGS+=(-e "${container_name}=${!host_name}")
         RUN_LOG+=("    env: ${container_name} (from host \$${host_name})")

@@ -95,9 +95,15 @@ if [[ -f "${CONFIG_FILE}" ]]; then
       continue
     fi
 
-    # List item: "  - value"
+    # List item: "  - value". Strip inline comments + trailing whitespace
+    # (same as the scalar branch above) so "  - 5432 # postgres" extracts
+    # as "5432", and a comment-only item ("  - # note") is skipped rather
+    # than leaking into the artifact files (which iptables/squid would choke on).
     if [[ "${line}" =~ ^[[:space:]]+-[[:space:]]+(.+)$ ]]; then
       value="${BASH_REMATCH[1]}"
+      value="${value%%#*}"
+      value="${value%"${value##*[![:space:]]}"}"
+      [[ -z "${value}" ]] && continue
       case "${section}" in
         http-domain-whitelist) echo "${value}" >> "${SQUID_WHITELIST}" ;;
         host-ports)            echo "${value}" >> "${HOST_PORTS}" ;;
@@ -106,10 +112,15 @@ if [[ -f "${CONFIG_FILE}" ]]; then
       continue
     fi
 
-    # Map entry: "  key: value"
+    # Map entry: "  key: value". Strip inline comments the same way so
+    # "  TOKEN: MY_TOKEN # note" produces a bare variable name (an unstripped
+    # value would make build_run_flags crash with "invalid variable name").
     if [[ "${line}" =~ ^[[:space:]]+([^[:space:]:]+):[[:space:]]+(.+)$ ]]; then
       key="${BASH_REMATCH[1]}"
       value="${BASH_REMATCH[2]}"
+      value="${value%%#*}"
+      value="${value%"${value##*[![:space:]]}"}"
+      [[ -z "${value}" ]] && continue
       case "${section}" in
         env-passthrough) echo "${key}=${value}" >> "${ENV_PASSTHROUGH}" ;;
         env)             echo "${key}=${value}" >> "${ENV_STATIC}" ;;
@@ -158,7 +169,10 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   fi
   printf '%s\n' "${cfg_sandbox_network_cidr}" > "${CIDR_FILE}"
 
-  # Validate intranet endpoints: strict "ipv4:port" form
+  # Validate intranet endpoints: strict "ipv4:port" form, octets 0-255,
+  # port 1-65535. (The shape regex alone accepts up to three digits per
+  # octet — 999.x.x.x:port would pass shape but be rejected by iptables at
+  # container start, aborting startup. Enforce the range here.)
   while IFS= read -r endpoint || [[ -n "${endpoint}" ]]; do
     [[ -z "${endpoint}" ]] && continue
     if [[ ! "${endpoint}" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}:[1-9][0-9]*$ ]]; then
@@ -170,6 +184,14 @@ if [[ -f "${CONFIG_FILE}" ]]; then
       echo "ERROR: intranet-endpoints entry '${endpoint}' has an invalid port (must be 1-65535)." >&2
       exit 1
     fi
+    end_ip="${endpoint%%:*}"
+    IFS='.' read -r o1 o2 o3 o4 <<< "${end_ip}"
+    for o in "${o1}" "${o2}" "${o3}" "${o4}"; do
+      if (( o > 255 )); then
+        echo "ERROR: intranet-endpoints entry '${endpoint}' has an invalid octet '${o}' (must be 0-255)." >&2
+        exit 1
+      fi
+    done
   done < "${INTRANET_ENDPOINTS}"
 
   echo "  Extracted $(wc -l < "${SQUID_WHITELIST}") whitelisted domain(s) into squid-whitelist.txt"

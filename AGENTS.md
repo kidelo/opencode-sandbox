@@ -115,7 +115,7 @@ The network is persistent by design; `ocs clean <name>` / `ocs kill` remove it. 
 
 `opencode-sandbox-config.yaml` accepts an `intranet-endpoints:` list of `ipv4:port` entries (one per line, no ranges, no CIDR). This is a generalisation of `host-ports` for on-prem services not running on the host.
 
-- `ocs rebuild` extracts these into `intranet-endpoints.txt` and validates the `ipv4:port` shape (port 1–65535).
+- `ocs rebuild` extracts these into `intranet-endpoints.txt` and validates the shape — `ipv4:port`, octets 0–255, port 1–65535 — so a malformed entry fails the rebuild with a clear error instead of aborting the container at start (iptables rejects bad IPs/ports).
 - The Dockerfile profiles (`config/Dockerfile.*`) each copy it to `/etc/intranet-endpoints.txt`.
 - `docker/entrypoint.sh` adds one `iptables -A OUTPUT -d <ip> -p tcp --dport <port> -j ACCEPT` per entry (so the connection bypasses Squid) **and** appends each IP to `no_proxy`/`NO_PROXY` so clients don't route it through the proxy.
 
@@ -131,6 +131,7 @@ The supported subset is intentionally narrow:
 - List items one level deep: `  - value`
 - Map entries one level deep: `  key: value`
 - Line comments (`#`) and blank lines
+- Inline comments are stripped **everywhere a value is read** — in scalars, list items, and map values (`  - 5432 # postgres` → `5432`; `  TOKEN: HOST_TOKEN # note` → `TOKEN=HOST_TOKEN`). Comment-only items (`  - # note`) are skipped. Do not rely on a `#` in a value surviving to the artifact files; they never do
 
 The parser distinguishes scalars from section headers by whether a value is present after the colon. A top-level scalar clears the current section context; entries that follow it are not attributed to any section until the next section header appears.
 
