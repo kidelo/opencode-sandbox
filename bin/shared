@@ -460,6 +460,7 @@ compute_cap_flags() {
 build_run_flags() {
   compute_cap_flags
   RUN_FLAGS=("${CAP_FLAGS[@]}")
+  RUN_LOG=()
 
   # Resource limits + privilege hardening (defense-in-depth against host
   # DoS from a misbehaving / prompt-injected agent): unbounded RAM, CPU or
@@ -476,7 +477,7 @@ build_run_flags() {
 
   # The single user read-write dir, at a fixed in-container path.
   RUN_FLAGS+=(-v "${SANDBOX_WORKSPACE_DIR}:/workspace")
-  RUN_LOG=("    workspace (rw): ${SANDBOX_WORKSPACE_DIR} -> /workspace")
+  RUN_LOG+=("    workspace (rw): ${SANDBOX_WORKSPACE_DIR} -> /workspace")
 
   # Self-hosted case: the whole project is the workspace, and the runtime
   # base (.sandbox: build context + opencode state) lives INSIDE it — so it
