@@ -396,7 +396,7 @@ env:
 - The host is reachable via `docker.host` (injected automatically at container start) — use this hostname instead of `localhost`
 
 **`intranet-endpoints`** — `ip:port` endpoints the container may connect to directly (bypasses the proxy):
-- Format is `ipv4:port` per line, e.g. `10.0.0.5:3306` or `192.168.1.10:8080`
+- Format is `ipv4:port` per line, e.g. `10.0.0.5:3306` or `192.168.1.10:8080` — each octet must be `0–255`, port `1–65535` (a malformed entry, e.g. `999.999.999.999:80`, is rejected at `ocs rebuild` with a clear error instead of aborting the container at start)
 - Use this for on-premises / intranet services not running on the host (internal databases, APIs, registries, …)
 - Each endpoint is allowlisted by the firewall and added to `no_proxy`, so clients connect to it directly without going through Squid
 - A rebuild is required after adding or removing entries
