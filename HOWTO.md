@@ -9,7 +9,8 @@ This guide walks through the full lifecycle: installing the tool, initialising o
 ## 1. Prerequisites
 
 - A Docker-compatible runtime (Docker, Podman, or Colima). This project was tested on Linux with Docker.
-- A network that can reach `opencode.ai` (the installer) and your model endpoint (e.g. an Ollama server) — both are listed in the sandbox config, see `config/opencode-sandbox-config.yaml`.
+- A network that can reach `opencode.ai` at **image-build time** (the OpenCode installer) — this is a host-side build dependency, not a runtime sandbox rule.
+- A runtime network that can reach your **model endpoint** (e.g. an Ollama server) — this **is** listed in the sandbox config under `intranet-endpoints`, see `config/opencode-sandbox-config.yaml`.
 - Optionally the [opencode](https://opencode.ai/) CLI on your host, for the TUI / one-shot modes (`ocs tui`, `ocs run`). Not required for the web UI.
 
 > **You do not need** Node, mise, or any toolchain on the host. The container installs everything it needs via `apt` at image-build time.
@@ -144,7 +145,7 @@ ocs run my-sandbox prompt.md -f context.md   # extra args pass through to `openc
 
 ### 5d. Security test — `ocs test <name>`
 
-Runs the sandbox security suite in its own one-shot container (no web container needed) and always removes it afterwards. It builds from the reserved `config/Dockerfile.test` profile (a network-analysis image: `nmap`, `tcpdump`, DNS tools, `python3`, `jq`) under its own tag `ocs-<SANDBOX_ID>-test`, so it does **not** touch the project's working image (built from `minimal` or `full`) — and the test image is removed automatically when `ocs test` exits:
+Runs the sandbox security suite in its own one-shot container (no web container needed), which is always removed afterwards. It builds from the reserved `config/Dockerfile.test` profile (a network-analysis image: `nmap`, `tcpdump`, DNS tools, `python3`, `jq`) under its own tag `ocs-<SANDBOX_ID>-test`, so it does **not** touch the project's working image (built from `minimal` or `full`). The test image is **kept on a pass** (cached for a fast re-run) and **removed on a fail/crash** (plus by `ocs clean` / `ocs kill`):
 
 ```bash
 ocs test my-sandbox
@@ -255,7 +256,7 @@ If it contains secrets, add it to `.gitignore`.
 - **Agent case SKIPs in `ocs test`** — the model endpoint (your Ollama `ip:port`) is not reachable from the container. Add it to `intranet-endpoints` in `config/opencode-sandbox-config.yaml` and rebuild.
 - **The agent cannot resolve a hostname (DNS "no answer"/timeout)** — expected with the default `agent-dns: deny` (the DNS exfil/C2 channel is closed). Two options: address the endpoint by IP (`intranet-endpoints: - ip:port`, and give the model `baseURL` an IP), or set `agent-dns: allow` in the config and rebuild if you accept the DNS exfil risk.
 - **A test case FAILed and the image vanished** — by design. `ocs rebuild` brings it back.
-- **Container runs out of memory / is killed (OOM) or feels CPU-limited** — every sandbox runs with host-DoS guards by default: `--memory=4g --cpus=2.0 --pids-limit=256 --security-opt=no-new-privileges:true` (see README → Network isolation). Raise the values in `bin/shared` (`build_run_flags`) and start again — no rebuild needed.
+- **Container runs out of memory / is killed (OOM) or feels CPU-limited** — every sandbox runs with host-DoS guards by default: `--memory=4g --memory-swap=4g --cpus=2.0 --pids-limit=256 --security-opt=no-new-privileges:true` (see README → Network isolation). Raise the values in `bin/shared` (`build_run_flags`) and start again — no rebuild needed.
 - **`ocs test` case 11 says "peer container not started"** — the runner could not bring up the second isolation-check container (e.g. image missing or runtime hiccup). Re-run `ocs test`; the deterministic cases are unaffected.
 - **Container won't start after a manual docker mess** — `ocs kill` resets all sandbox containers/images/networks (and only those).
 - **Where is my session history?** — `<project>/.sandbox/state/opencode/`, mounted at `/home/dev/.local/share/opencode`. `ocs kill` does **not** delete it (only `ocs kill --state` does).

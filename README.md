@@ -16,7 +16,7 @@ OpenCode is a powerful AI coding assistant — but by default it runs on your ho
 - 🧹 **Clean environment** — no bleed-over between projects; rebuild any time for a fresh start
 - 🛡️ **Network isolation** — every sandbox gets its own dedicated Docker network and an internal firewall; egress is proxy- or firewall-restricted, and the container is dropped to a non-root user
 - 🧱 **DoS-hardened** — fixed limits on memory, CPU, and process count plus `no-new-privileges`, so one sandbox can never take down the host
-- 🧲 **DNS-tunnel blocked** — the agent cannot use the resolver `127.0.0.11:53` as an exfil/C2 channel (uid-scoped drop; squid-uid and all IP-only endpoints unaffected — opt-in via `agent-dns: allow`)
+- 🧲 **DNS-tunnel blocked** — the agent cannot use the resolver `127.0.0.11:53` as an exfil/C2 channel (uid-scoped drop by default; squid-uid and all IP-only endpoints unaffected — re-open only by explicit choice via `agent-dns: allow`)
 - 🧪 **Verified** — a built-in 21-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress, resource limits active, two running containers cannot see each other, and the DNS-tunnel gate is in the configured state — **all blocked/verified**
 
 **Quick start**
@@ -233,7 +233,7 @@ If a case's optional dependency is unavailable (the AI-agent case cannot reach t
 > **Tip:** `ocs clear <name>` is an alias for `ocs clean <name>` — same effect, easier to remember.
 
 Removes:
-- All containers of this project (running **and** stopped) — `ocs-<SANDBOX_ID>` and any `-run-$$` / `-tui-$$` / `-test-$$` variants
+- All containers of this project (running **and** stopped) — `ocs-<SANDBOX_ID>` and any `-run-$$` / `-tui-$$` / `-test-$$` variants, plus the `ocs test` helper containers (`-peer-…`, `-lst-ep-…`, `-lst-host-…`)
 - Both images of this project — `ocs-<SANDBOX_ID>` (working: `minimal` or `full`) **and** `ocs-<SANDBOX_ID>-test` (the reserved test profile)
 - The dedicated Docker network — `ocs-net-<SANDBOX_ID>`
 - Both on-disk trees inside the project — `<project>/.sandbox/build/` and `<project>/.sandbox/state/`
@@ -505,6 +505,8 @@ Each project gets its own isolated container named `ocs-<SANDBOX_ID>`. The `SAND
 │   ├── opencode-password        # Generated server password (owner-only, root:root)
 │   ├── opencode-port            # Validated OpenCode HTTP port
 │   ├── sandbox-network-cidr.txt # Configured network range (e.g. 10.77.0.0/16)
+│   ├── agent-dns                # DNS-tunnel gate value: deny (default) | allow
+│   ├── dockerfile-name          # Selected image profile (e.g. minimal, full)
 │   ├── squid.conf               # Copied from the sandbox repo (docker/squid.conf)
 │   ├── squid-whitelist.txt      # Extracted from http-domain-whitelist
 │   ├── host-ports.txt           # Extracted from host-ports
@@ -516,7 +518,7 @@ Each project gets its own isolated container named `ocs-<SANDBOX_ID>`. The `SAND
 │   └── docker-build.log         # Docker build output (created during build)
 └── state/                       # Persistent (survives a rebuild)
     ├── opencode/                # OpenCode session/history (mounted into the container)
-    └── sandbox-network-map      # Sandbox → /24 subnet binding (deterministic, written by rebuild)
+    └── sandbox-network-map      # Sandbox → /24 subnet binding (deterministic, written on demand)
 ```
 
 OpenCode state (including session history, configuration, and cache) is persisted across container restarts by mounting `<project>/.sandbox/state/opencode/` as `/home/dev/.local/share/opencode` inside the container.
