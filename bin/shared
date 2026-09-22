@@ -403,6 +403,40 @@ proxy_enabled() {
   [[ -s "${OPENCODE_SANDBOX_DIR}/squid-whitelist.txt" ]]
 }
 
+# Expand a single $VAR / ${VAR} reference in a string to its value (or "" when
+# unset) WITHOUT evaluating anything else. Safe for untrusted, config-file
+# sourced paths (volume-mounts host dirs): unlike `eval`, it runs no commands,
+# no arithmetic, and no `$(...)`. Everything that is not a recognized variable
+# is kept verbatim.
+expand_env_path() {
+  local s="${1-}" out="" before inner name
+  # Walk the string to the next '$' each iteration. When found, resolve a
+  # ${VAR} or $VAR reference; otherwise keep the '$' verbatim. Everything else
+  # is never interpreted (no command substitution, no arithmetic, no eval).
+  while [[ "${s}" == *'$'* ]]; do
+    before="${s%%'$'*}"
+    out+="${before}"
+    s="${s:${#before}}"                       # s now starts at the '$'
+    local rest="${s#'$'}"                     # what follows the '$'
+    if [[ "${rest}" == '{'* && "${rest}" == *'}'* ]]; then
+      inner="${rest#'{'}"                     # text inside the braces
+      name="${inner%%'}'*}"                   # up to the first '}'
+      out+="${!name-}"
+      s="${inner#*'}'}"                       # resume after the '}'
+    elif [[ "${rest}" == [A-Za-z_]* ]]; then
+      name="${rest%%[^A-Za-z0-9_]*}"
+      out+="${!name-}"
+      rest="${rest#"$name"}"
+      s="$rest"                               # resume after the name
+    else
+      out+='$'                                # lone '$' (e.g. '$(' ) -> keep verbatim
+      s="${rest}"
+    fi
+  done
+  out+="${s}"
+  printf '%s' "${out}"
+}
+
 # CAP_FLAGS — the container capability set.
 #   NET_ADMIN : the iptables firewall (always runs).
 #   SETUID,SETGID : gosu's root->dev privilege drop (setresuid/setresgid) and
@@ -513,8 +547,11 @@ build_run_flags() {
       [[ -z "${entry}" ]] && continue
       local container_dir="${entry%%=*}"
       local host_dir="${entry#*=}"
-      # Expand environment variables in the host path (e.g. $HOME, ${HOME})
-      host_dir="$(eval echo "${host_dir}")"
+      # Expand environment variables in the host path (e.g. $HOME, ${HOME}).
+      # expand_env_path is SAFE for untrusted config values (only $VAR refs are
+      # resolved; nothing -- no command sub, no arithmetic -- is ever executed,
+      # unlike the previous `eval`, which would run code from the config file).
+      host_dir="$(expand_env_path "${host_dir}")"
       RUN_FLAGS+=(-v "${host_dir}:${container_dir}")
       RUN_LOG+=("    mount: ${host_dir} -> ${container_dir}")
     done < "${VOLUME_MOUNTS_FILE}"
