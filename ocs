@@ -141,7 +141,12 @@ case "${cmd}" in
     #   ocs run my-sandbox prompts/a.md        # name + file
     run_first="${1:-}"
     [[ $# -gt 0 ]] && shift
-    if [[ -f "${SANDBOXES_BASE}/${run_first}/config/opencode-sandbox-config.yaml" ]]; then
+    # The first arg is a project NAME only if it is a valid sandbox name AND
+    # names an existing project under SANDBOXES_BASE. Otherwise it is the
+    # prompt (file or inline) and the project is resolved from the CWD.
+    # (Requiring the name shape — same as resolve_project — stops a raw path
+    # like ".." or "../x" from being used to select an unintended project.)
+    if [[ "${run_first}" =~ ^[a-z0-9][a-z0-9-]*$|^[a-z0-9]$ ]] && [[ -f "${SANDBOXES_BASE}/${run_first}/config/opencode-sandbox-config.yaml" ]]; then
       run_dir="${SANDBOXES_BASE}/${run_first}"
       [[ $# -gt 0 ]] || { echo "ocs: 'ocs run <name>' needs a prompt (a prompt file or an inline string)." >&2; exit 1; }
       cd "${run_dir}"

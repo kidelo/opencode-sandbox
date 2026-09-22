@@ -198,7 +198,12 @@ stop_and_remove_listeners() {
   "${CONTAINER_RUNTIME}" rm -f "${LST_EP_NAME}" >/dev/null 2>&1 || true
   "${CONTAINER_RUNTIME}" stop "${LST_HOST_NAME}" >/dev/null 2>&1 || true
   "${CONTAINER_RUNTIME}" rm -f "${LST_HOST_NAME}" >/dev/null 2>&1 || true
-  rm -rf -- "${FWD_MOUNT_DIR}" 2>/dev/null || true
+  # FWD_MOUNT_DIR may be unset if we fail before the temp dir is created
+  # (the EXIT trap is armed above that point); the :- guard keeps the
+  # handler from aborting under `set -u` mid-cleanup.
+  if [[ -n "${FWD_MOUNT_DIR:-}" ]]; then
+    rm -rf -- "${FWD_MOUNT_DIR}" 2>/dev/null || true
+  fi
 }
 
 trap 'stop_and_remove_peer; stop_and_remove_listeners; echo; "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true' EXIT

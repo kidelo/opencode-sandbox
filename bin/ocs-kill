@@ -50,6 +50,13 @@ CONTAINER_MATCH="^(ocs|opencode-sandbox)-"
 IMAGE_MATCH="^(ocs|opencode-sandbox)-"
 NET_MATCH="^(ocs-net|opencode-sandbox-net|ocs-scratch)-"
 if [[ -n "${FILTER}" ]]; then
+  # FILTER must be a valid project-name fragment (a-z, 0-9, hyphen). This
+  # excludes every ERE metacharacter, so the subsequent prefix match is safe
+  # to interpolate into a regex without any further escaping.
+  if [[ ! "${FILTER}" =~ ^[a-z0-9][a-z0-9-]*$|^[a-z0-9]$ ]]; then
+    echo "ERROR: filter '${FILTER}' is not a valid project name (a-z, 0-9, hyphen only)." >&2
+    exit 1
+  fi
   CONTAINER_MATCH="${CONTAINER_MATCH}.*${FILTER}"
   IMAGE_MATCH="${IMAGE_MATCH}.*${FILTER}"
   NET_MATCH="${NET_MATCH}.*${FILTER}"

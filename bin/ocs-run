@@ -102,8 +102,13 @@ fi
 
 # OPCODE_CMD is eval'd inside the container by the entrypoint as 'dev';
 # $(cat ...) runs there, so the prompt content never touches the host shell.
+# INNER_PATH is escaped with printf %q so paths containing quotes, spaces, or
+# other shell metacharacters are handled correctly by the entrypoint's eval.
+# (Bash does not re-expand the result of a $(), so file content — even if it
+# contains $(cmd) — is safe data, not executable code.)
 # shellcheck disable=SC2016
-OPCODE_CMD="exec opencode run -m '${OPENCODE_MODEL}' \"\$(cat '${INNER_PATH}')\""
+SAFE_PATH="$(printf '%q' "${INNER_PATH}")"
+OPCODE_CMD="exec opencode run -m '${OPENCODE_MODEL}' \"\$(cat ${SAFE_PATH})\""
 if [[ ${#} -gt 0 ]]; then
   ESCAPED_ARGS="$(printf '%q ' "$@")"
   OPCODE_CMD=" ${OPCODE_CMD} ${ESCAPED_ARGS}"
