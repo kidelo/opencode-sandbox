@@ -22,7 +22,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/shared"
 
-if [[ ${#} -lt 1 || "${1}" == "-h" || "${1}" == "--help" ]]; then
+# No prompt given. Treat a missing first arg AND an empty first arg (the
+# dispatcher passes "" for `ocs run` with no arguments) the same way: show
+# usage. An empty prompt would otherwise be written to a temp file and run a
+# full container with nothing to say.
+if [[ -z "${1:-}" || "${1}" == "-h" || "${1}" == "--help" ]]; then
   cat <<'EOF'
 usage: ocs-run <prompt> [extra opencode-run args...]
 
@@ -35,7 +39,7 @@ usage: ocs-run <prompt> [extra opencode-run args...]
 Extra args are passed through to 'opencode run' (e.g. -f other.md,
 --format json).
 EOF
-  [[ ${#} -lt 1 ]] && exit 1
+  [[ -z "${1:-}" ]] && exit 1
   exit 0
 fi
 
