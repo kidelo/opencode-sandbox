@@ -48,13 +48,22 @@ use_sandbox_root
 print_sandbox_dir
 
 # --- Resolve the regexes / names -----------------------------------------
-# Every runtime artifact of this project shares the same prefix
-# `ocs-<SANDBOX_ID>` (or the legacy `opencode-sandbox-<SANDBOX_ID>` scheme).
-# We match both so a clean also removes objects created by an older build, and
-# the per-project path hash in SANDBOX_ID keeps us scoped to exactly this
-# project.
+# Every runtime artifact of this project is named
+# `ocs-<SANDBOX_ID><suffix>` (or the legacy `opencode-sandbox-<SANDBOX_ID>`
+# scheme). We match both so a clean also removes objects created by an older
+# build, and the per-project path hash in SANDBOX_ID keeps us scoped to
+# exactly this project.
+#
+# The match is ANCHORED to the exact SANDBOX_ID followed only by one of the
+# known suffix tokens the run doors create (see the `-run-$$` / `-tui-$$` /
+# `-test` / `-peer-$$` / `-lst-*/` names in bin/). This stops `ocs clean` from
+# deleting a DIFFERENT project whose name merely extends ours (a bare
+# `^ocs-<ID>` prefix would also match `ocs-<ID>2` or `ocs-<ID>-foo-…`).
 ID_NEW="ocs-${SANDBOX_ID}"
 ID_OLD="opencode-sandbox-${SANDBOX_ID}"
+CSUF='(-tui-[0-9]+|-run-[0-9]+|-test(-[0-9]+)?|-peer-[0-9]+|-lst-ep-[0-9]+|-lst-host-[0-9]+)?'
+MATCH_NEW="^${ID_NEW}${CSUF}$"
+MATCH_OLD="^${ID_OLD}${CSUF}$"
 NET_NEW="ocs-net-${SANDBOX_ID}"
 NET_OLD="opencode-sandbox-net-${SANDBOX_ID}"
 
@@ -72,7 +81,7 @@ echo ""
 # Match both the new (ocs-) and legacy (opencode-sandbox-) naming schemes.
 while IFS= read -r c; do
   [[ -z "${c}" ]] && continue
-  if [[ "${c}" =~ ^${ID_NEW} ]] || [[ "${c}" =~ ^${ID_OLD} ]]; then
+  if [[ "${c}" =~ ${MATCH_NEW} ]] || [[ "${c}" =~ ${MATCH_OLD} ]]; then
     if "${CONTAINER_RUNTIME}" rm -f "${c}" >/dev/null 2>&1; then
       echo "  removed container: ${c}"
       removed_containers=$((removed_containers + 1))
@@ -83,7 +92,7 @@ done < <("${CONTAINER_RUNTIME}" ps -a --format '{{.Names}}' 2>/dev/null)
 # --- 2) Images (working + test) --------------------------------------------
 while IFS= read -r image; do
   [[ -z "${image}" ]] && continue
-  if [[ "${image}" =~ ^${ID_NEW} ]] || [[ "${image}" =~ ^${ID_OLD} ]]; then
+  if [[ "${image}" =~ ${MATCH_NEW} ]] || [[ "${image}" =~ ${MATCH_OLD} ]]; then
     if "${CONTAINER_RUNTIME}" rmi -f "${image}" >/dev/null 2>&1; then
       echo "  removed image:     ${image}"
       removed_images=$((removed_images + 1))
