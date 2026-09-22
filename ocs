@@ -12,7 +12,7 @@ set -euo pipefail
 #   ocs run <name> <prompt> [args]   One-shot 'opencode run' (prompt file or inline string)
 #   ocs web <name>           Web UI mode
 #   ocs web-auth <name>      Web URL with basic-auth credentials
-#   ocs terminal <name>      Debug shell in a one-shot container
+#   ocs terminal <name>      Attach an opencode session to the running web container
 #   ocs test <name>          Security suite (own one-shot container)
 #   ocs list                 List sandbox projects
 #   ocs clean [name]         Nuclear per-project cleanup (containers + images + network + state)
@@ -49,7 +49,7 @@ commands:
                        file (md) or an inline prompt string
   web <name>       Web UI mode
   web-auth <name>  Print the web URL with basic-auth credentials
-  terminal <name>  Open a shell in a one-shot sandbox container (debug)
+  terminal <name>  Attach an opencode terminal session to the running web container
   test <name>      Run the security test suite (starts its own one-shot container)
   list             List sandbox projects (./sandboxes/)
   clean <name>     Nuclear per-project cleanup: containers + images + network + on-disk state
