@@ -284,18 +284,35 @@ resolve_add_host_flag() {
   return 0
 }
 
-# Validate a sandbox network CIDR: IPv4 with octets 0-255 and prefix 8..24.
-# (prefix > 24 is too small to contain a /24 per sandbox; prefix < 8 would
-# allow the range to cover public space.)
+# Validate a sandbox network CIDR: octets 0-255, prefix 8..24, and the WHOLE
+# range must fall inside RFC1918 private space (10.0.0.0/8, 172.16.0.0/12,
+# 192.168.0.0/16). (prefix > 24 is too small to contain a /24 per sandbox;
+# prefix < 8 or a public base would let the range cover public addresses.)
 valid_sandbox_cidr() {
   local cidr="${1:-}"
   [[ "${cidr}" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+  local a b c d p
+  a="${BASH_REMATCH[1]}"; b="${BASH_REMATCH[2]}"; c="${BASH_REMATCH[3]}"
+  d="${BASH_REMATCH[4]}"; p="${BASH_REMATCH[5]}"
   local o
-  for o in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"; do
+  for o in "${a}" "${b}" "${c}" "${d}"; do
     (( o <= 255 )) || return 1
   done
-  (( BASH_REMATCH[5] >= 8 && BASH_REMATCH[5] <= 24 )) || return 1
-  return 0
+  (( p >= 8 && p <= 24 )) || return 1
+
+  # The full range (network .. last) must stay within one private block.
+  local ip netmask hostmask network last
+  ip=$(( (a << 24) | (b << 16) | (c << 8) | d ))
+  netmask=$(( 0xFFFFFFFF ^ ((1 << (32 - p)) - 1) ))
+  hostmask=$(( 0xFFFFFFFF ^ netmask ))
+  network=$(( ip & netmask ))
+  last=$(( network | hostmask ))
+
+  # RFC1918: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+  if   (( network >= (10 << 24)  && last <= ((10 << 24)  | 0x00FFFFFF) )); then return 0; fi
+  if   (( network >= ((172 << 24) | (16 << 16)) && last <= ((172 << 24) | (31 << 16) | 0x00FFFF) )); then return 0; fi
+  if   (( network >= ((192 << 24) | (168 << 16)) && last <= ((192 << 24) | (168 << 16) | 0x00FFFF) )); then return 0; fi
+  return 1
 }
 
 # Derive the subnet of this sandbox's dedicated network.

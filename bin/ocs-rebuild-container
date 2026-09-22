@@ -149,9 +149,11 @@ if [[ -f "${CONFIG_FILE}" ]]; then
 
   # Dedicated container network range (all sandboxes on this host share the
   # range; each sandbox gets its own /24 inside it, assigned by shared).
+  # It must be an IPv4 CIDR in RFC1918 private space (10/8, 172.16/12,
+  # 192.168/16), octets 0-255, prefix 8-24 — see valid_sandbox_cidr in shared.
   CIDR_FILE="${OPENCODE_SANDBOX_DIR}/sandbox-network-cidr.txt"
-  if ! [[ "${cfg_sandbox_network_cidr}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]]; then
-    echo "ERROR: 'sandbox-network-cidr' must be an IPv4 CIDR (e.g. 10.77.0.0/16); got '${cfg_sandbox_network_cidr}'." >&2
+  if ! valid_sandbox_cidr "${cfg_sandbox_network_cidr}"; then
+    echo "ERROR: 'sandbox-network-cidr' must be an RFC1918 private IPv4 CIDR (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) with prefix 8-24 (e.g. 10.77.0.0/16); got '${cfg_sandbox_network_cidr}'." >&2
     exit 1
   fi
   printf '%s\n' "${cfg_sandbox_network_cidr}" > "${CIDR_FILE}"
