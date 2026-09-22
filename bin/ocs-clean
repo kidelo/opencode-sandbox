@@ -90,6 +90,10 @@ while IFS= read -r c; do
 done < <("${CONTAINER_RUNTIME}" ps -a --format '{{.Names}}' 2>/dev/null)
 
 # --- 2) Images (working + test) --------------------------------------------
+# Use {{.Repository}} only (no :tag): the anchored MATCH_NEW/MATCH_OLD regexes
+# match a bare image name. Docker's images list outputs "name:tag" for tagged
+# images (e.g. "ocs-x:latest"); stripping the tag lets the regex match, and
+# `rmi -f <name>` (without :tag) removes ALL tags on that repository anyway.
 while IFS= read -r image; do
   [[ -z "${image}" ]] && continue
   if [[ "${image}" =~ ${MATCH_NEW} ]] || [[ "${image}" =~ ${MATCH_OLD} ]]; then
@@ -98,7 +102,7 @@ while IFS= read -r image; do
       removed_images=$((removed_images + 1))
     fi
   fi
-done < <("${CONTAINER_RUNTIME}" images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+done < <("${CONTAINER_RUNTIME}" images --format '{{.Repository}}' 2>/dev/null)
 
 # --- 3) Dedicated Docker network (new + legacy names) ----------------------
 # The per-sandbox subnet assignment (sandbox-network-map) is re-created on
