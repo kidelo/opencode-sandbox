@@ -10,8 +10,8 @@ set -euo pipefail
 #   ocs start <name>         Web container (one-shot, Ctrl-C stops)
 #   ocs tui <name>           Interactive TUI session (one-shot)
 #   ocs run <name> <prompt> [args]   One-shot 'opencode run' (prompt file or inline string)
-#   ocs web <name>           Web UI mode
-#   ocs web-auth <name>      Web URL with basic-auth credentials
+#   ocs web <name>           Open the web UI in the browser
+#   ocs web-auth <name>      Open the web UI with a pre-authenticated URL
 #   ocs terminal <name>      Attach an opencode session to the running web container
 #   ocs test <name>          Security suite (own one-shot container)
 #   ocs list                 List sandbox projects
@@ -47,8 +47,8 @@ commands:
   tui <name>       Interactive OpenCode TUI (one-shot)
   run <name> <prompt> [args]   One-shot opencode run; <prompt> is a prompt
                        file (md) or an inline prompt string
-  web <name>       Web UI mode
-  web-auth <name>  Print the web URL with basic-auth credentials
+  web <name>       Open the web UI in the browser
+  web-auth <name>  Open the web UI in the browser with pre-authenticated basic-auth URL
   terminal <name>  Attach an opencode terminal session to the running web container
   test <name>      Run the security test suite (starts its own one-shot container)
   list             List sandbox projects (./sandboxes/)
