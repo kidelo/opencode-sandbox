@@ -48,8 +48,9 @@ done
 #   <SANDBOXES_BASE>/<name>
 NAME="${ARGS[0]:-$(basename "$(pwd)")}"
 # Docker naming: lowercase letters, digits, hyphens; start/end alnum.
-if [[ ! "${NAME}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-  echo "ERROR: sandbox name '${NAME}' is not valid (use lowercase letters, digits, hyphens)." >&2
+# (valid_sandbox_name in shared is the single source of the rule.)
+if ! valid_sandbox_name "${NAME}"; then
+  echo "ERROR: sandbox name '${NAME}' is not valid (lowercase letters, digits, hyphens; must start and end with a letter or digit)." >&2
   exit 1
 fi
 TARGET_DIR="${SANDBOXES_BASE}/${NAME}"

@@ -67,8 +67,8 @@ EOF
 resolve_project() {
   local name="${1:-}" cmd="${2:-}" proj_dir=""
   if [[ -n "${name}" ]]; then
-    if [[ ! "${name}" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-      echo "ocs: invalid project name '${name}' (lowercase letters, digits, hyphens)." >&2
+    if ! valid_sandbox_name "${name}"; then
+      echo "ocs: invalid project name '${name}' (lowercase letters, digits, hyphens; must start and end with a letter or digit)." >&2
       return 1
     fi
     proj_dir="${SANDBOXES_BASE}/${name}"
@@ -146,7 +146,7 @@ case "${cmd}" in
     # prompt (file or inline) and the project is resolved from the CWD.
     # (Requiring the name shape — same as resolve_project — stops a raw path
     # like ".." or "../x" from being used to select an unintended project.)
-    if [[ "${run_first}" =~ ^[a-z0-9][a-z0-9-]*$|^[a-z0-9]$ ]] && [[ -f "${SANDBOXES_BASE}/${run_first}/config/opencode-sandbox-config.yaml" ]]; then
+    if valid_sandbox_name "${run_first}" && [[ -f "${SANDBOXES_BASE}/${run_first}/config/opencode-sandbox-config.yaml" ]]; then
       run_dir="${SANDBOXES_BASE}/${run_first}"
       [[ $# -gt 0 ]] || { echo "ocs: 'ocs run <name>' needs a prompt (a prompt file or an inline string)." >&2; exit 1; }
       cd "${run_dir}"
