@@ -210,12 +210,13 @@ trap 'stop_and_remove_peer; stop_and_remove_listeners; echo; "${CONTAINER_RUNTIM
 
 CIDR="$(tr -d '[:space:]' < "${SANDBOX_CIDR_FILE}" 2>/dev/null || echo 10.77.0.0/16)"
 
-# Runner-injected sentinels (test 13/14/15/16/19): proof that the run-door
+# Runner-injected sentinels (cases 13/14/15/16/19): proof that the run-door
 # wiring (env passthrough, extra volume mounts, harness endpoints, port) is
 # exercised with values this run controls — independent of the project's own
-# config. FWD_SENTINEL is a random value (asserts exact forwarding); the
-# others are fixed (documented in the cases).
-sentinel_hex="$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n' 2>/dev/null || true)"
+# config. FWD_SENTINEL is a random value (asserts exact forwarding) — it is
+# both an env var (case 13) and the content of a file in the mounted temp
+# dir (case 14). The others are fixed (documented in the cases).
+ sentinel_hex="$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n' 2>/dev/null || true)"
 if [[ -n "${sentinel_hex}" ]]; then
   FWD_SENTINEL="ocs-fwd-${sentinel_hex}"
 else
@@ -223,6 +224,13 @@ else
 fi
 FWD_MOUNT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ocs-fwd.XXXXXX")"
 chmod u=rwx,go= "${FWD_MOUNT_DIR}"
+# Pre-populate the host-side mount dir with a sentinel file. Case 14
+# inside the container asserts this file is visible AND its content
+# matches FWD_TEST_SENTINEL (passed via -e, same value case 13 checks).
+# Without the -v mount the container still sees /mnt/ocs-fwd (baked into
+# Dockerfile.test, writable) but no sentinel — so a write roundtrip alone
+# would false-pass and this check is the actual proof of the wiring.
+printf '%s\n' "${FWD_SENTINEL}" > "${FWD_MOUNT_DIR}/.ocs-fwd-sentinel"
 
 "${CONTAINER_RUNTIME}" run -d --init \
   --name "${TEST_CONTAINER}" \

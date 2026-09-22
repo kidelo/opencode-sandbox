@@ -109,7 +109,10 @@ RUN if [ -n "${HARNESS_EP_IP}" ]; then \
     if [ -n "${HARNESS_HOST_PORT}" ]; then \
         echo "${HARNESS_HOST_PORT}" >> /etc/host-ports.txt; \
     fi
-# Landing dir for the volume-mount test case (case 14).
+# Landing dir for the volume-mount test case (case 14). NOTE: this dir
+# existing/writable in the image alone is NOT proof of the -v mount —
+# ocs-test detects the mount via the sentinel file the runner writes
+# into its host-side temp dir (checked by case 14 against FWD_TEST_SENTINEL).
 RUN mkdir -p /mnt/ocs-fwd && chown "${USER_ID}:${GROUP_ID}" /mnt/ocs-fwd
 
 # --- ocs test harness listener ------------------------------------------------
