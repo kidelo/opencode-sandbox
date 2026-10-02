@@ -226,19 +226,25 @@ else
 fi
 echo ""
 
-# --- rebuild the container ---
+ # --- rebuild the container ---
 echo "Step 5/5: Build the Docker container image for this project."
 echo "  This compiles the image using the Dockerfile in the sandbox home and"
 echo "  the derived build artifacts in ${OPENCODE_SANDBOX_DIR}."
+BUILT=0
 if [[ "${NO_BUILD}" -eq 1 ]]; then
   echo "  Skipped (--no-build). Run 'ocs rebuild ${NAME}' when ready."
 elif confirm "  Build the container image (ocs rebuild)?"; then
   cd "${TARGET_DIR}"
   "${SCRIPT_DIR}/ocs-rebuild-container"
+  BUILT=1
 else
   echo "  Skipped. Run 'ocs rebuild' manually when ready."
 fi
 
 echo ""
 echo "Sandbox project ready at: ${TARGET_DIR}"
-echo "Next: ocs rebuild ${NAME} && ocs start ${NAME} | ocs run ${NAME} <prompt.md> | ocs tui ${NAME}"
+if [[ "${BUILT}" -eq 1 ]]; then
+  echo "Next: ocs start ${NAME}  ·  ocs tui ${NAME}  ·  ocs run ${NAME} <prompt.md>"
+else
+  echo "Next: ocs rebuild ${NAME} && ocs start ${NAME}   ·   ocs tui ${NAME}   ·   ocs run ${NAME} <prompt.md>"
+fi
