@@ -8,7 +8,9 @@ set -euo pipefail
 #   ocs init <name>          Create a new sandbox project at ./sandboxes/<name>/
 #   ocs rebuild <name>       Build the container image for <name>
 #   ocs start <name>         Web container (one-shot, Ctrl-C stops)
-#   ocs tui <name>           Interactive TUI session (one-shot)
+#   ocs tui <name> [-c] [-s ID] [--fork]   Interactive TUI (one-shot);
+#                                          resume the last (-c) or a session (-s)
+#                                          after an abort, optionally forked (--fork)
 #   ocs run <name> <prompt> [args]   One-shot 'opencode run' (prompt file or inline string)
 #   ocs web <name>           Open the web UI in the browser
 #   ocs web-auth <name>      Open the web UI with a pre-authenticated URL
@@ -44,7 +46,11 @@ commands:
                           --dockerfile: image profile; --no-build: skip build)
   rebuild <name>   Build the container image for <name>
   start <name>     Start the one-shot web container (Ctrl+C stops and removes it)
-  tui <name>       Interactive OpenCode TUI (one-shot)
+   tui [name] [-c] [-s ID] [--fork]
+                         Interactive OpenCode TUI (one-shot). Resume an aborted
+                         session: -c/--continue (last), -s/--session <id> (one),
+                         --fork (fork before continuing; needs -c or -s). The name
+                         may be omitted when run from inside a sandbox project.
   run <name> <prompt> [args]   One-shot opencode run; <prompt> is a prompt
                        file (md) or an inline prompt string
   web <name>       Open the web UI in the browser
@@ -161,14 +167,38 @@ case "${cmd}" in
     echo "ocs: 'ocs run' needs a project — pass a name ('ocs run <name> <prompt>'), or run from inside a sandbox project ('ocs list' shows names)." >&2
     exit 1
     ;;
-  rebuild|rebuild-container|start|start-container|tui|interactive|web|web-auth|terminal|test|clean|clear)
+  tui|interactive)
+    # ocs tui [name] [resume-flags]
+    # The resume flags (-c/--continue, -s/--session <id>, --fork) may appear
+    # either before or after the project name; the dispatcher re-orders only
+    # what it sees (the name, if present) and passes the rest through verbatim.
+    # ocs-interactive parses the flags and builds OPCODE_CMD from them.
+    # First arg is a project NAME only if it is a valid sandbox name that names
+    # an existing project; otherwise it is a flag (e.g. -c, -s, --fork, --help)
+    # and the project is resolved from the current directory.
+    tui_first="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    if valid_sandbox_name "${tui_first}" && [[ -f "${SANDBOXES_BASE}/${tui_first}/config/opencode-sandbox-config.yaml" ]]; then
+      cd "${SANDBOXES_BASE}/${tui_first}"
+      exec "${BIN_DIR}/ocs-interactive" "$@"
+    fi
+    # No name (or the first arg is a flag) — resolve the project from CWD and
+    # pass the first arg back (it is a flag like -c, --session, --fork, --help).
+    tui_dir="$(find_sandbox_root 2>/dev/null || true)"
+    if [[ -n "${tui_dir}" && -d "${tui_dir}" ]]; then
+      cd "${tui_dir}"
+      exec "${BIN_DIR}/ocs-interactive" "${tui_first}" "$@"
+    fi
+    echo "ocs: 'ocs tui' needs a project — pass a name ('ocs tui <name>'), or run from inside a sandbox project ('ocs list' shows names)." >&2
+    exit 1
+    ;;
+  rebuild|rebuild-container|start|start-container|web|web-auth|terminal|test|clean|clear)
     PROJ_DIR="$(resolve_project "${1:-}" "${cmd}")"
     [[ $# -gt 0 ]] && shift
     cd "${PROJ_DIR}"
     case "${cmd}" in
       rebuild|rebuild-container)   exec "${BIN_DIR}/ocs-rebuild-container" "$@" ;;
       start|start-container)       exec "${BIN_DIR}/ocs-start-container" "$@" ;;
-      tui|interactive)             exec "${BIN_DIR}/ocs-interactive" "$@" ;;
       web)                         exec "${BIN_DIR}/ocs-web" "$@" ;;
       web-auth)                    exec "${BIN_DIR}/ocs-web-auth" "$@" ;;
       terminal)                    exec "${BIN_DIR}/ocs-terminal" "$@" ;;

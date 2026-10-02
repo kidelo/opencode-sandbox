@@ -31,6 +31,8 @@ ocs init my-sandbox && ocs start my-sandbox   # → http://127.0.0.1:4096
 
 The container is based on Debian (python:3.13-slim-bookworm). All software — OpenCode, shell packages, and (in the `full` profile) the dev toolchain — is installed via `apt` during the image build. **No extra toolchain (mise, etc.) needs to be installed on your host, and the container has no access to your Docker daemon.**
 
+> **Fast setup (`ocs init` is quick by design).** The shared, project-independent work — the common shell packages, the `dev` user, and the OpenCode download — is built **once per host** into a local base image (`ocs-base`), and every profile image just layers its own extras on top of it. So the first `ocs rebuild` on a host pays for the base once, and each subsequent `ocs init`/`ocs rebuild` (for any project, any profile) only rebuilds the profile-specific parts — a few seconds, not minutes. `ocs kill` removes this shared base (it's a host-wide cleanup); `ocs clean <name>` leaves it in place so other projects keep working.
+
 > **Want to just start using it?** Read [HOWTO.md](HOWTO.md) — a step-by-step guide covering setup, every way to run OpenCode, the working directories, config, and troubleshooting. This README is the reference and the design rationale.
 
 ## Contents
@@ -41,7 +43,7 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 - [Project setup](#project-setup)
 - [Commands](#commands)
   - [`ocs init`](#ocs-init-name) · [`ocs rebuild`](#ocs-rebuild-name) · [`ocs start`](#ocs-start-name) · [`ocs web`](#ocs-web-name) · [`ocs web-auth`](#ocs-web-auth-name)
-  - [`ocs terminal`](#ocs-terminal-name) · [`ocs tui`](#ocs-tui-name) · [`ocs run`](#ocs-run-name-prompt) · [`ocs test`](#ocs-test-name)
+   - [`ocs terminal`](#ocs-terminal-name) · [`ocs tui`](#ocs-tui-name-resume-flags) · [`ocs run`](#ocs-run-name-prompt) · [`ocs test`](#ocs-test-name)
   - [`ocs clean`](#ocs-clean-name) · [`ocs kill`](#ocs-kill) · [`ocs list`](#ocs-list)
 - [Container lifecycle](#container-lifecycle)
 - [Network isolation](#network-isolation)
@@ -105,7 +107,8 @@ Then run it — from any directory, by name:
 ```bash
 ocs start my-sandbox                     # one-shot web container, Ctrl-C to stop
 # or
-ocs tui my-sandbox                       # interactive TUI, no web server
+ ocs tui my-sandbox                       # interactive TUI, no web server
+ ocs tui my-sandbox -c                    # resume the last (aborted) session
 # or
 ocs run my-sandbox prompt.md             # one-shot prompt-file run
 ```
@@ -130,7 +133,7 @@ Interactively creates (each step skipped if already present, default answer is y
 2. **Container image profile** — lists the available `config/Dockerfile.*` profiles (minus the reserved `test` one) and writes your choice as a top-level `dockerfile:` key in the config (default: `minimal`)
 3. `config/opencode.jsonc` — OpenCode model, provider, and permission config
 4. `opencode-sandbox-pre-start-container.sh` — empty hook script sourced before the container starts (see [Hooks](#hooks))
-5. Builds the Docker container image (using the profile you picked)
+5. Builds the Docker container image (using the profile you picked). This reuses the host's shared **base image** (`ocs-base`, the common packages + `dev` user + OpenCode, built once per host — so a normal profile build is fast); only the profile-specific extras and your per-project config are added on top.
 
 **Scriptable (no prompts):** `ocs init` accepts flags so it can run unattended:
 
@@ -185,11 +188,25 @@ Opens the browser with credentials embedded in the URL (basic auth) on macOS or 
 
 Attaches an OpenCode terminal session to the running web container.
 
-### `ocs tui <name>`
+### `ocs tui [name] [resume-flags]`
 
 Starts a **one-shot container** and drops directly into the **opencode interactive terminal (TUI)** as the unprivileged `dev` user — no web server involved. The Squid proxy and firewall are applied first (by the entrypoint), so the session is sandboxed exactly like the web one. Leave the session with `Ctrl+D` / `/exit`; the container is removed.
 
 Runs a one-shot `docker run` with a distinct name, so a web container from `ocs start` can keep running in parallel.
+
+**Resuming an aborted session.** Session history is persisted between runs (it lives in the persistent opencode state, mounted at `/home/dev/.local/share/opencode`), so if a TUI run aborts you can pick it back up:
+
+```sh
+ocs tui my-sandbox -c                  # continue the last session
+ocs tui my-sandbox -s <session-id>     # continue a specific session
+ocs tui my-sandbox -c --fork           # resume the last session as a fork
+```
+
+- `-c` / `--continue` — continue the last session (use after an abort).
+- `-s` / `--session <id>` — continue that specific session by id (`opencode session list` shows ids; use one inside the container to find the current id).
+- `--fork` — fork the session before continuing (combine with `-c` or `-s`).
+- The **name is optional**: `ocs tui -c` works from inside a sandbox project (the project is resolved from the current directory), so you don't need to repeat the name to resume.
+- One of `-c`/`-s` is required for `--fork`; `-c` and `-s` are mutually exclusive. Unknown flags fail loudly (they are never silently dropped).
 
 ### `ocs run [name] <prompt>`
 
@@ -238,6 +255,8 @@ Removes:
 - The dedicated Docker network — `ocs-net-<SANDBOX_ID>`
 - Both on-disk trees inside the project — `<project>/.sandbox/build/` and `<project>/.sandbox/state/`
 
+The host-wide shared **base image** (`ocs-base`) is **not** touched by `ocs clean` (it is shared by every project, so cleaning one project should not break the others).
+
 ```sh
 ocs clean my-project   # everything for my-project (never touches another project)
 ```
@@ -251,7 +270,7 @@ After `ocs clean`, the project is back to "never been built on this host". `ocs 
 Cleans up everything the sandbox system created on this host — useful after a crash, a hard abort, or to fully remove a sandbox:
 
 - All leftover sandbox **containers** (running or stopped)
-- All sandbox **images** (`ocs-*`)
+- All sandbox **images** (`ocs-*`, including the shared base image `ocs-base`)
 - All dedicated sandbox **networks** (`ocs-net-*`)
 
 ```sh
@@ -263,7 +282,7 @@ ocs kill --state my-project   # also delete .sandbox/build/ and .sandbox/state/ 
 
 Both `ocs kill` and `ocs clean` match the current `ocs-` / `ocs-net-` names **and** the legacy `opencode-sandbox-` / `opencode-sandbox-net-` names from before the rename, so pre-rename artifacts are still cleaned. Only objects with those name families are ever touched — all other containers, images, and networks in your Docker environment (including those of other projects that don't use this tool) are left completely alone. The command is idempotent: running it with nothing left to do simply reports nothing removed.
 
-> **Note:** `ocs kill` removes the **image**, so `ocs rebuild` is required before starting again. The per-project state directory (`<project>/.sandbox/state/`) is **not** touched by a plain `kill` — session history survives. Add `--purge` to also remove the disposable build dir, or `--state` to remove both the build dir and the session.
+> **Note:** `ocs kill` removes the **images** (each project's working + test images, **and** the shared base image `ocs-base`), so `ocs rebuild` is required before starting again and will re-build the base once if it's gone. The per-project state directory (`<project>/.sandbox/state/`) is **not** touched by a plain `kill` — session history survives. Add `--purge` to also remove the disposable build dir, or `--state` to remove both the build dir and the session.
 
 ### `ocs list`
 
@@ -284,6 +303,7 @@ Use it to discover the name to pass to other `ocs <command> <name>` invocations.
 | After changing `config/Dockerfile.<profile>` | `ocs rebuild my-sandbox` then `ocs start my-sandbox` |
 | After changing `config/opencode-sandbox-config.yaml` | `ocs rebuild my-sandbox` then `ocs start my-sandbox` |
 | Interactive session (TUI, no web) | `ocs tui my-sandbox` |
+| Resume an aborted TUI session | `ocs tui my-sandbox -c` (last) · `-s <id>` (one) · `+ --fork` |
 | One-shot from a prompt file | `ocs run my-sandbox your/prompt.md` |
 | Verify sandbox security | `ocs test my-sandbox` (its own test image; no web session needed) |
 | List sandbox projects | `ocs list` |
@@ -372,7 +392,8 @@ env:
 - If two sandboxes on the same host use the same `opencode-port`, the second web container start fails with "port is already allocated" — use distinct `opencode-port` values per project when running several in parallel (or use the one-shot `ocs run` / `ocs tui` modes, which publish no port at all)
 
 **`dockerfile`** — the container image profile to build from:
-- Selects which `config/Dockerfile.<name>` file `ocs rebuild` builds: the `minimal` profile (harness + `python3`, the default) or the `full` profile (full dev toolchain: build tools + a large `pip` data/office/PDF/OCR/sci stack)
+- Selects which `config/Dockerfile.<name>` file `ocs rebuild` builds: the `minimal` profile (harness only, the default) or the `full` profile (full dev toolchain: build tools + a large `pip` data/office/PDF/OCR/sci stack)
+- Every profile builds **on top of the shared base image** `ocs-base` (from `config/base.Dockerfile`), so the common packages, the `dev` user, and the OpenCode download are precompiled once per host and reused — this is what keeps `ocs init`/`ocs rebuild` fast
 - `ocs init` lists the available profiles (the `config/Dockerfile.*` files, excluding the reserved `test` one) and writes your choice here
 - The `test` profile (`config/Dockerfile.test`, a network-analysis image) is reserved for `ocs test` and **cannot** be selected by a project
 - A rebuild is required after changing this setting
@@ -469,7 +490,7 @@ opencode-sandbox/
 │   ├── ocs-init                # Initialize a project under ./sandboxes/ (repo-local)
 │   ├── ocs-rebuild-container   # Build the Docker image
 │   ├── ocs-start-container     # Start the web container (opencode web)
-│   ├── ocs-interactive         # One-shot container with the opencode TUI (no web server)
+│   ├── ocs-interactive         # One-shot container with the opencode TUI (no web server; -c/--continue, -s/--session, --fork resume an aborted session)
 │   ├── ocs-run                 # One-shot `opencode run` from a markdown prompt file
 │   ├── ocs-terminal            # Attach a terminal session to the web server
 │   ├── ocs-web                 # Open the web UI
@@ -479,9 +500,10 @@ opencode-sandbox/
 │   ├── ocs-kill                # Remove sandbox containers, images, and networks
 │   └── shared                  # Shared configuration, utilities, and guards (sourced by the ocs-* scripts)
 ├── config/                     # Project config — the single source; copied into target projects by ocs init (except the Dockerfiles)
-│   ├── Dockerfile.minimal      #   image profile: harness + python3 (default)
-│   ├── Dockerfile.full         #   image profile: full dev toolchain (pip data/office/sci stack)
-│   ├── Dockerfile.test         #   image profile: reserved for `ocs test` (network-analysis suite)
+│   ├── base.Dockerfile         #   Shared precompiled base (the common packages + dev user + OpenCode); built once per host as `ocs-base`
+│   ├── Dockerfile.minimal      #   image profile (FROM ocs-base): harness only (default)
+│   ├── Dockerfile.full         #   image profile (FROM ocs-base): full dev toolchain (pip data/office/sci stack)
+│   ├── Dockerfile.test         #   image profile (FROM ocs-base): reserved for `ocs test` (network-analysis suite)
 │   ├── opencode-sandbox-config.yaml
 │   └── opencode.jsonc
 ├── docker/                     # Container runtime files (copied into the build context by ocs-rebuild-container)
@@ -547,7 +569,11 @@ The container now exposes exactly three mounts to the agent. Only the first is a
 | **`bin/shared` new API** | `build_run_flags` assembled `--cap-*` inline per door | New `proxy_enabled()`, `compute_cap_flags()`, `SANDBOX_WORKSPACE_DIR`, `SANDBOX_RUNTIME_BASE`; `build_run_flags` populates `CAP_FLAGS` alongside `RUN_FLAGS`/`RUN_LOG` so every door reuses one place |
 | **Self-hosted repo (this one)** | Mounted the repo 1:1 — agent could edit `bin/`, `config/`, `.sandbox/` | `workspace: .` (the whole repo **is** the workspace) — expected and intended for a self-host; `.sandbox/` is masked in-container (above). Runtime tree remains *inside* the project (gitignored via the `.sandbox` entry) — it is *never* visible to the agent but lives in a stable, `ocs clean`-able location |
 
-Items **unchanged** from the pre-redesign state: the `ocs` dispatcher surface, image profiles (`minimal` / `full` / `test`), the `sandbox-network-cidr` per-sandbox `/24`, `intranet-endpoints`, `env-passthrough` / `env`, the build-once one-shot container lifecycle, and `ocs kill` / `ocs clean`.
+Items **unchanged** from the pre-redesign state: the `ocs` dispatcher surface, the container image **profiles** (`minimal` / `full` / `test`), the `sandbox-network-cidr` per-sandbox `/24`, `intranet-endpoints`, `env-passthrough` / `env`, the build-once one-shot container lifecycle, and `ocs kill` / `ocs clean`.
+
+| Area | Before | Now |
+|---|---|---|
+| **Image build speed** | Every `ocs init`/`ocs rebuild` re-ran the full apt install, the dev-user setup, and the OpenCode download for that project | The shared, project-independent work lives in a **precompiled base image** `config/base.Dockerfile` → `ocs-base` (built once per host, reused while its labels match). Profiles are `FROM ocs-base` + their own extras, so a profile build only pays for its own `apt`/`pip` layers — `ocs init` is seconds, not minutes |
 
 ---
 

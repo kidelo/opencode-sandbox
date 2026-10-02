@@ -86,7 +86,7 @@ There are four ways to run, all of which use the same image and the same sandbox
 | Goal | Command | Container lifetime |
 |---|---|---|
 | **Web UI** (browser) | `ocs start my-sandbox` then `ocs web my-sandbox` | lives while the terminal is open |
-| **TUI** in your terminal | `ocs tui my-sandbox` | one-shot, dies when you `/exit` |
+| **TUI** in your terminal | `ocs tui my-sandbox` | one-shot, dies when you `/exit`; `-c`/`-s <id>` resume an aborted session |
 | **One-shot** from a prompt file | `ocs run my-sandbox prompt.md` | one-shot, dies when the task ends |
 | **Programmatic check / CI** | `ocs test my-sandbox` | one-shot (its own test container), always removed |
 
@@ -113,7 +113,7 @@ Authenticate in the browser with:
 
 ---
 
-### 5b. Interactive TUI — `ocs tui <name>`
+### 5b. Interactive TUI — `ocs tui [name] [resume-flags]`
 
 Drops straight into the **opencode terminal (TUI)** as the `dev` user in a one-shot container. Squid + firewall are applied first (by the entrypoint), so the session is sandboxed exactly like the web one.
 
@@ -122,6 +122,16 @@ ocs tui my-sandbox
 ```
 
 Leave with `Ctrl+D` or `/exit`; the container is removed automatically. No web server is started.
+
+**Resuming an aborted session.** Session history survives between runs, so if a TUI run aborts (lost connection, `Ctrl+C`, …) you can continue where it left off:
+
+```bash
+ocs tui my-sandbox -c            # continue the last session
+ocs tui my-sandbox -s ses_…      # continue a specific session by id
+ocs tui my-sandbox -c --fork     # resume the last as a fork (needs -c or -s)
+```
+
+You can also omit the name when you are inside the project: `ocs tui -c` (the project is resolved from the current directory). `-c` and `-s` are mutually exclusive; `--fork` needs one of them; unknown flags fail loudly.
 
 ---
 
@@ -239,6 +249,7 @@ If it contains secrets, add it to `.gitignore`.
 | First-time setup | `ocs init my-sandbox` then `ocs start my-sandbox` |
 | Daily use (web) | `ocs start my-sandbox` then `ocs web my-sandbox` |
 | Daily use (TUI) | `ocs tui my-sandbox` |
+| Resume an aborted TUI session | `ocs tui my-sandbox -c` (last) · `-s <id>` (one) |
 | One-shot task | `ocs run my-sandbox prompt.md` |
 | After a config/Dockerfile change | `ocs rebuild my-sandbox` then your run command |
 | Verify sandbox security | `ocs test my-sandbox` |
@@ -260,6 +271,7 @@ If it contains secrets, add it to `.gitignore`.
 - **`ocs test` case 11 says "peer container not started"** — the runner could not bring up the second isolation-check container (e.g. image missing or runtime hiccup). Re-run `ocs test`; the deterministic cases are unaffected.
 - **Container won't start after a manual docker mess** — `ocs kill` resets all sandbox containers/images/networks (and only those).
 - **Where is my session history?** — `<project>/.sandbox/state/opencode/`, mounted at `/home/dev/.local/share/opencode`. `ocs kill` does **not** delete it (only `ocs kill --state` does).
+- **I aborted / lost a TUI session — how do I resume it?** — The history is still in `<project>/.sandbox/state/opencode/`. Start a new TUI and continue: `ocs tui my-sandbox -c` (last session) or `ocs tui my-sandbox -s <session-id>`. The name is optional from inside the project (`ocs tui -c`). If the session was killed mid-run, `-c` picks up where it left off.
 
 ---
 

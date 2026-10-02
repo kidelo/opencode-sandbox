@@ -5,14 +5,82 @@ set -euo pipefail
 # interactive terminal (TUI) as the 'dev' user. Squid + firewall are applied
 # first by the entrypoint, so the session is sandboxed exactly like the web one.
 # Ctrl+D (or /exit) in opencode ends the session; the container is removed.
+#
+# The last session is preserved (it lives in the persistent opencode state
+# tree, mounted at /home/dev/.local/share/opencode), so an aborted TUI can be
+# resumed:
+#   ocs tui [name] -c            # continue the last session
+#   ocs tui [name] -s <id>       # continue a specific session by id
+#   ocs tui [name] --fork        # fork before continuing (with -c or -s)
 
 # Source common configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/shared"
 
+usage() {
+  cat <<'EOF'
+usage: ocs tui [name] [resume-flags]
+
+Runs the opencode interactive TUI (one-shot, sandboxed). Resume options
+(passed through to 'opencode'):
+  -c, --continue        continue the last session (e.g. after an abort)
+  -s, --session <id>    continue a specific session by id
+      --fork            fork the session before continuing (needs -c or -s)
+  -h, --help            show this help
+
+'name' may be omitted when run from inside a sandbox project (it is then
+resolved from the current directory), so 'ocs tui -c' resumes without naming
+the project.
+EOF
+}
+
 use_sandbox_root
 print_sandbox_dir
+
+# Parse the resume flags. An empty first arg is the dispatcher's "no name"
+# placeholder — ignore it. Unknown args fail loudly instead of being dropped.
+TUI_CONT=0
+TUI_SES=""
+TUI_FORK=0
+while [[ $# -gt 0 ]]; do
+  case "${1}" in
+    "")             shift; continue ;;
+    -h|--help)      usage; exit 0 ;;
+    -c|--continue)
+      [[ -z "${TUI_SES}" ]] || { echo "ocs tui: use either --continue OR --session <id>." >&2; usage >&2; exit 2; }
+      TUI_CONT=1 ;;
+    -s|--session)
+      [[ $# -ge 2 && -n "${2:-}" ]] || { echo "ocs tui: --session requires a session id." >&2; usage >&2; exit 2; }
+      case "${2}" in -*) echo "ocs tui: the --session id must not start with '-'." >&2; usage >&2; exit 2 ;; esac
+      [[ ${TUI_CONT} -eq 0 ]] || { echo "ocs tui: use either --continue OR --session <id>." >&2; usage >&2; exit 2; }
+      TUI_SES="${2}"; shift ;;
+    --fork)         TUI_FORK=1 ;;
+    *)              echo "ocs tui: unknown argument: ${1}" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [[ ${TUI_FORK} -eq 1 && ${TUI_CONT} -eq 0 && -z "${TUI_SES}" ]]; then
+  echo "ocs tui: --fork requires --continue or --session <id>." >&2
+  usage >&2
+  exit 2
+fi
+
+# Build the command the entrypoint evals as 'dev'. Bare 'opencode' starts the
+# TUI (model + provider pinned by the read-only opencode.jsonc); the resume
+# flags are appended as separate tokens, the session id shell-quoted so it
+# survives the entrypoint's eval (same printf-%q discipline as ocs-run).
+OPCODE_CMD="opencode"
+[[ ${TUI_CONT} -eq 1 ]] && OPCODE_CMD="${OPCODE_CMD} --continue"
+[[ -n "${TUI_SES}" ]] && OPCODE_CMD="${OPCODE_CMD} --session $(printf '%q' "${TUI_SES}")"
+[[ ${TUI_FORK} -eq 1 ]] && OPCODE_CMD="${OPCODE_CMD} --fork"
+
+# Human summary of the resume state (startup banner).
+TUI_RESUME_DESC="fresh session (no resume flag)"
+[[ ${TUI_CONT} -eq 1 ]] && TUI_RESUME_DESC="continue last session"
+[[ -n "${TUI_SES}" ]] && TUI_RESUME_DESC="continue session: ${TUI_SES}"
+[[ ${TUI_FORK} -eq 1 ]] && TUI_RESUME_DESC="${TUI_RESUME_DESC} (+fork)"
 
 if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
   echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
@@ -40,16 +108,16 @@ NAME="${CONTAINER_NAME}-tui-$$"
 echo "Starting interactive opencode session (model: ${OPENCODE_MODEL}) ..."
 echo "   container: ${NAME}"
 echo "   type:      interactive TUI (no web server)"
+echo "   resume:    ${TUI_RESUME_DESC}"
 for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done
 echo "---"
 echo ""
 
-# OPCODE_CMD is eval'd by the entrypoint as the dev user; 'opencode' starts
-# the TUI, which is pinned to the configured model by opencode.jsonc
-# (model + enabled_providers) plus the container firewall.
+# OPCODE_CMD is eval'd by the entrypoint as the dev user (see the SC2016 note
+# near the bottom of docker/entrypoint.sh). 'opencode' is on dev's PATH.
 exec "${CONTAINER_RUNTIME}" run --rm --init -it \
   --name "${NAME}" \
-  -e "OPCODE_CMD=opencode" \
+  -e "OPCODE_CMD=${OPCODE_CMD}" \
   -e "OPENCODE_MODEL=${OPENCODE_MODEL}" \
   "${RUN_FLAGS[@]}" \
   "${CONTAINER_NAME}"
