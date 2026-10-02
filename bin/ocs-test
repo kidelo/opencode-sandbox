@@ -60,9 +60,11 @@ EP_IP="${SUBNET_BASE%.0}.50"
 # image_is_current before the cached test image is reused. Bump when the
 # harness mechanism changes (e.g. v2 added the multi-port listener and
 # the +1 contrast port; v3 ships the entrypoint fix that skips the
-# host-port ACCEPT rules when docker.host is unresolved) so stale
-# cached test images get rebuilt.
-TEST_API="3"
+# host-port ACCEPT rules when docker.host is unresolved; v4 fixes
+# Dockerfile.test layer order — the harness EP/host-port RUN previously
+# ran BEFORE the COPY of the project allow-lists, so the baked rule was
+# wiped — cases 15/16) so stale cached test images get rebuilt.
+TEST_API="4"
 HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API}"
 
 # Rebuild only when the cached image is missing or was built before the

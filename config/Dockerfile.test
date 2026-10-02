@@ -52,11 +52,25 @@ RUN apt-get update \
         jq \
     && rm -rf /var/lib/apt/lists/*
 
+# --- squid proxy configuration ----------------------------------------------
+COPY squid.conf /etc/squid/squid.conf
+COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
+
+# --- firewall configuration ---------------------------------------------------
+COPY host-ports.txt /etc/host-ports.txt
+COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
+COPY agent-dns /etc/agent-dns
+
 # --- test-harness egress targets (baked from the build args above) -----------
 # Appended to the allow-lists the entrypoint reads at start, so this TEST image
 # alone can be reached at the runner's positive-egress targets. The working
 # profiles (minimal/full) never set these args — they stay empty — so this can
 # never leak into a project's working image or its firewall.
+# LAYER ORDER MATTERS: this RUN must come AFTER the COPYs of the two
+# allow-lists above (otherwise the COPY would overwrite the RUN's output
+# with the project's own files, and the baked harness EP / host port would
+# never make it into /etc, so no ACCEPT rule would be installed and the
+# positive egress cases 15/16 would fail).
 RUN if [ -n "${HARNESS_EP_IP}" ]; then \
         echo "${HARNESS_EP_IP}:${HARNESS_EP_PORT}" >> /etc/intranet-endpoints.txt; \
     fi && \
@@ -76,15 +90,6 @@ RUN mkdir -p /mnt/ocs-fwd && chown "${USER_ID}:${GROUP_ID}" /mnt/ocs-fwd
 #   OPCODE_CMD="python3 /opt/ocs-test/listener.py <port>"
 COPY listener.py /opt/ocs-test/listener.py
 RUN chmod 0644 /opt/ocs-test/listener.py
-
-# --- squid proxy configuration ----------------------------------------------
-COPY squid.conf /etc/squid/squid.conf
-COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
-
-# --- firewall configuration ---------------------------------------------------
-COPY host-ports.txt /etc/host-ports.txt
-COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
-COPY agent-dns /etc/agent-dns
 
 # --- opencode password + entrypoint ------------------------------------------
 COPY opencode-password /opencode-password
