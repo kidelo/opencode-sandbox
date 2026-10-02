@@ -32,6 +32,8 @@ ocs init my-sandbox && ocs start my-sandbox   # → http://127.0.0.1:4096
 The container is based on Debian (python:3.13-slim-bookworm). All software — OpenCode, shell packages, and (in the `full` profile) the dev toolchain — is installed via `apt` (and `pip` for the Python data/office/PDF/OCR/sci stack) during the image build. **No extra toolchain (mise, etc.) needs to be installed on your host, and the container has no access to your Docker daemon.**
 
 > **Fast setup (`ocs init` is quick by design).** The expensive, project-independent work is built **once per host** into local **base images** (not re-run per project), and every profile just layers its own extras on top of them. There are two levels: `ocs-base` (the common packages + `dev` user + the OpenCode download, from `config/base.Dockerfile`) and `ocs-base-full` (adds the `full` profile's dev toolchain — the apt set + the large pip data/office/PDF/OCR/sci stack — from `config/base-full.Dockerfile`). So the first `ocs rebuild` on a host pays for the base(s) once, and each subsequent `ocs init`/`ocs rebuild` (for any project, **any profile**) only rebuilds the thin per-project tail — a few seconds, not minutes. `ocs kill` removes both shared bases (it's a host-wide cleanup); `ocs clean <name>` leaves them in place so other projects keep working.
+>
+> The **OpenCode CLI is pinned to a specific version** in the base image (`config/base.Dockerfile` — `ARG OPENCODE_BUILD_VERSION`, currently 1.18.32). Every container therefore runs the exact CLI version it was built with, so behaviour is reproducible host-to-host and rebuild-to-rebuild. Bump that one line (and `OCS_BASE_API` in `bin/ocs-rebuild-container`) to track a new CLI release — `ocs rebuild` then re-builds the bases once (see "Image profiles").
 
 > **Want to just start using it?** Read [HOWTO.md](HOWTO.md) — a step-by-step guide covering setup, every way to run OpenCode, the working directories, config, and troubleshooting. This README is the reference and the design rationale.
 
@@ -44,7 +46,7 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 - [Commands](#commands)
   - [`ocs init`](#ocs-init-name) · [`ocs rebuild`](#ocs-rebuild-name) · [`ocs start`](#ocs-start-name) · [`ocs web`](#ocs-web-name) · [`ocs web-auth`](#ocs-web-auth-name)
    - [`ocs terminal`](#ocs-terminal-name) · [`ocs tui`](#ocs-tui-name-resume-flags) · [`ocs run`](#ocs-run-name-prompt) · [`ocs test`](#ocs-test-name)
-  - [`ocs clean`](#ocs-clean-name) · [`ocs kill`](#ocs-kill) · [`ocs list`](#ocs-list)
+  - [`ocs clean`](#ocs-clean-name) · [`ocs kill`](#ocs-kill) · [`ocs list`](#ocs-list) · [`ocs status`](#ocs-status-name) · [`ocs logs`](#ocs-logs-name-flags)
 - [Container lifecycle](#container-lifecycle)
 - [Network isolation](#network-isolation)
 - [Configuration](#configuration--configopencode-sandbox-configyaml)
@@ -121,7 +123,7 @@ New sandbox projects are **gitignored** by default — they are local to your ch
 
 All functionality is exposed through the single `ocs` command — `ocs <command> <project>` (see `ocs help`). You address sandboxes **by name**, so you never need to `cd` into a project. The `bin/ocs-*` files under the hood are the individual implementations that `ocs` dispatches to; they are not part of the user interface (only the repository root is on your `PATH`, so just `ocs` is reachable).
 
-Most commands take the project **name** as their first argument (e.g. `ocs start my-sandbox`). A few don't: `ocs init <name>` (creates the project), `ocs list`, and `ocs kill`. `ocs run` is special: its first argument is a *name* only when it is a known project — otherwise it is the *prompt* (file or inline) and the project is resolved from the current directory (see `ocs run`).
+Most commands take the project **name** as their first argument (e.g. `ocs start my-sandbox`). A few don't: `ocs init <name>` (creates the project), `ocs list`, `ocs status`, and `ocs kill`. `ocs run` and `ocs logs` are special: their first argument is a *name* only when it is a known project — otherwise it is a flag (or the prompt, for `ocs run`) and the project is resolved from the current directory (see `ocs run` / `ocs logs`).
 
 ### `ocs init <name>`
 
@@ -294,6 +296,33 @@ ocs list              # → my-sandbox, another-sandbox, …
 
 Use it to discover the name to pass to other `ocs <command> <name>` invocations.
 
+### `ocs status [name]`
+
+Lists the sandbox **containers** currently on this host (running and stopped), as opposed to `ocs list`, which lists the sandbox **projects** (source directories). No project argument is required, and it does not start a container:
+
+```sh
+ocs status                # every ocs-*/opencode-sandbox-* container on this host
+ocs status my-sandbox     # only containers whose name matches "my-sandbox"
+```
+
+The name filter is a substring match, so a partial name works. This is the quickest way to see what sandbox containers exist right now (the counterpart to `docker ps`), especially since most doors (`ocs tui` / `ocs run` / `ocs test`) use `--rm` and their containers vanish on exit — they will not appear here after they finish.
+
+### `ocs logs [name] [flags]`
+
+Shows or tails the log of a project's sandbox container. All flags are passed through verbatim to `docker logs` (or `podman logs`), so your runtime's flag set is authoritative:
+
+```sh
+ocs logs                              # last 200 lines of the container log
+ocs logs my-sandbox                   # same, by name
+ocs logs my-sandbox -f                # follow live (Ctrl+C to stop)
+ocs logs my-sandbox -n 50             # only the last 50 lines
+ocs logs my-sandbox --since 10m       # only the last 10 minutes
+ocs logs my-sandbox --tail all        # the entire log
+ocs logs my-sandbox -t                # include timestamps
+```
+
+The name is optional when you run it from inside a sandbox project (the project is resolved from the current directory). It reads the *existing* container named `ocs-<SANDBOX_ID>` — it does not start one. One-shot doors (`ocs tui` / `ocs run` / `ocs test`) run with `--rm`, so their containers disappear on exit and their logs are only available while the door is still active (use `ocs logs -f` during a live `ocs tui` / `ocs start`). If no such container exists, `ocs logs` tells you so and points you at `ocs status`.
+
 ## Container lifecycle
 
 | Situation | Command |
@@ -307,6 +336,8 @@ Use it to discover the name to pass to other `ocs <command> <name>` invocations.
 | One-shot from a prompt file | `ocs run my-sandbox your/prompt.md` |
 | Verify sandbox security | `ocs test my-sandbox` (its own test image; no web session needed) |
 | List sandbox projects | `ocs list` |
+| See running sandbox containers | `ocs status` (or `ocs status my-sandbox`) |
+| Read / follow a container's log | `ocs logs my-sandbox` (or `ocs logs -f` for live) |
 | Wipe one sandbox completely (image + network + state) | `ocs clean my-sandbox` |
 | Stop the web container | `Ctrl+C` in the `ocs start my-sandbox` terminal (container is removed) |
 | Full cleanup after a crash/abort | `ocs kill` or `ocs kill my-sandbox` (containers + images + networks) |
@@ -593,7 +624,10 @@ This repository is a **fork** of [comsysto/opencode-sandbox](https://github.com/
 | **Workspace & config mounts** | Project mounted at its **same absolute host path** inside the container | **Fixed `/workspace` (rw)** — the single user rw dir — plus `opencode.jsonc` at **`/etc/opencode/opencode.jsonc` (read-only)**, so the agent can read its own config but never rewrite it; the sandbox's `.sandbox` runtime tree is **masked** out of the workspace |
 | **State location** | Global host dir `~/.opencode-sandbox/<SANDBOX_ID>/` | **In-project** `.sandbox/{build,state}/` (opencode state tree persistent across runs; gitignored; removed by `ocs clean`/`ocs kill`) |
 | **Container lifecycle** | Long-running web container as the norm | **Build-once, one-shot runs** — the image is the only persistent artifact; web / TUI / one-shot / test are all fresh `docker run`s that clean themselves up |
-| **Run modes** | Web UI (`ocs start`) | Added **`ocs tui`** (TUI — with `-c`/`--continue`, `-s`/`--session`, `--fork` to resume an aborted session) and **`ocs run`** (markdown prompt file **or inline prompt string**) one-shot modes |
+ | **Run modes** | Web UI (`ocs start`) | Added **`ocs tui`** (TUI — with `-c`/`--continue`, `-s`/`--session`, `--fork` to resume an aborted session) and **`ocs run`** (markdown prompt file **or inline prompt string**) one-shot modes |
+ | **Observability** | Manual `docker ps`/`docker logs` | **`ocs status [name]`** — one-line view of sandbox containers on the host (subset of `docker ps`); **`ocs logs [name] [flags]`** — project-scoped log access, flags pass through to `docker logs` (-f, -n, --since, --tail all, -t) |
+ | **CLI reproducibility** | OpenCode CLI installed as newest available (varies by host and by time) | **Pinned to a specific version** (`config/base.Dockerfile` — `ARG OPENCODE_BUILD_VERSION`) so every container runs the same CLI regardless of when / where the image is built |
+ | **Build safety** | Concurrent rebuilds race on shared build dir | **`flock` guard** — second concurrent `ocs rebuild` exits 75 (lock released on process exit; no stale lock risk) |
 | **Security** | Manual | **`ocs test`** automated suite (deterministic assertions + an AI-agent red-team) that runs its own one-shot container from the reserved `Dockerfile.test` profile (image `ocs-<ID>-test`) and **removes only the test image on FAIL** — the working image is never clobbered |
 | **Cleanup** | Manual `docker rm` | **`ocs kill`** — idempotent removal of all sandbox containers, images, and networks without touching anything else |
 | **Config layout** | Config at project root; templates in `init-templates/` | **`config/` single source of truth**, plus `docker/` for runtime files and `bin/shared` for the shared library — no duplicated templates |

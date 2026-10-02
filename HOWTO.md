@@ -168,6 +168,22 @@ It checks (deterministic + an AI-agent red-team) that egress is blocked, no sens
 
 > **If a case fails** (or the run is interrupted), `ocs test` **removes the test image** (`ocs-<SANDBOX_ID>-test`) so only known-good builds remain. Your working image is untouched.
 
+### 5e. Seeing what's running — `ocs status` and `ocs logs`
+
+Two inspection helpers that do **not** start a container:
+
+```sh
+ocs status                # which sandbox containers exist right now (running + stopped)
+ocs status my-sandbox     # only containers matching "my-sandbox" (substring)
+ocs logs                  # last 200 lines of this project's container log
+ocs logs -f               # follow the log live (Ctrl+C to stop)
+ocs logs -n 50            # only the last 50 lines
+```
+
+`ocs status` is the "what containers are there?" view (a filtered `docker ps`); `ocs logs` reads the log of the existing container for a project, passing flags straight through to `docker logs`. The name is optional when you run it from inside a project (resolved from the current directory).
+
+> **One-shot caveat:** most doors (`ocs tui` / `ocs run` / `ocs test`) use `--rm`, so their containers disappear on exit and their logs are only available while the door is still alive. `ocs logs` will tell you if the container is gone and point you at `ocs status`.
+
 ---
 
 ## 6. Working directories (where OpenCode "lives")
@@ -257,6 +273,8 @@ If it contains secrets, add it to `.gitignore`.
 | After a config/Dockerfile change | `ocs rebuild my-sandbox` then your run command |
 | Verify sandbox security | `ocs test my-sandbox` |
 | List sandbox projects | `ocs list` |
+| See running sandbox containers | `ocs status` (or `ocs status my-sandbox`) |
+| Read / follow a container's log | `ocs logs my-sandbox` (or `ocs logs -f`) |
 | Wipe one sandbox completely (image + network + state) | `ocs clean my-sandbox` |
 | Full cleanup of all sandboxes on this host | `ocs kill` |
 | Stop the web container | `Ctrl+C` in the `ocs start my-sandbox` terminal |
