@@ -1,6 +1,14 @@
 # ==========================================================================
 # Dockerfile.minimal — harness-only sandbox image.
 #
+# Builds on the precompiled shared base image `ocs-base` (see base.Dockerfile,
+# created by `ocs rebuild` before this file is built). `ocs-base` already has
+# the Debian base, the common apt set (squid/iptables/gosu/… the sandbox
+# harness), the `dev` user + dirs, the opencode CLI, and the xdg-open stub.
+# This profile adds only what the minimal profile uniquely wants: nothing.
+# The per-project squid / firewall config, the opencode password, and the
+# entrypoint are layered on here (they are project/profile-specific).
+#
 # What it gives you:
 #   - The opencode-sandbox skeleton (squid egress proxy + iptables firewall
 #     + gosu privilege drop + the opencode CLI)
@@ -18,74 +26,26 @@
 # project's config does not set `dockerfile:`, ocs rebuild uses this one).
 # ==========================================================================
 
-FROM python:3.13-slim-bookworm
+# FROM ocs-base — the precompiled shared base (base.Dockerfile) already carries
+# the Debian base, the common apt set (the sandbox harness), the `dev` user +
+# dirs, the opencode CLI, the xdg-open stub, and the ENV/WORKDIR. Nothing below
+# needs to re-declare them.
+FROM ocs-base
 
-ARG USER_ID
-ARG GROUP_ID
-ARG WORKSPACE_DIR=/workspace
-
-ENV WORKSPACE_DIR=${WORKSPACE_DIR} \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
-
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
-# --- OS packages -----------------------------------------------------------
-# Only the bare minimum the sandbox harness needs. python is already in the
-# base image (python:3.13-slim-bookworm); we add nothing on top of it.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        curl \
-        ca-certificates \
-        git \
-        xdg-utils \
-        gosu \
-        procps \
-        squid \
-        iptables \
-        iproute2 \
-        iputils-ping \
-        netcat-openbsd \
-        dnsutils \
-        whois \
-    && rm -rf /var/lib/apt/lists/*
-
-# --- user / group ----------------------------------------------------------
-RUN if ! getent group ${GROUP_ID} > /dev/null 2>&1; then \
-    groupadd -g ${GROUP_ID} dev; \
-fi
-RUN if ! getent passwd ${USER_ID} > /dev/null 2>&1; then \
-    useradd -m -l -u ${USER_ID} -g ${GROUP_ID} --shell /bin/bash dev; \
-fi
-
-# --- workspace + user dirs ---------------------------------------------------
-# /etc/opencode is the mount point for config/opencode.jsonc (bound read-only
-# at run time; opencode reads it via $OPENCODE_CONFIG but cannot rewrite it).
-RUN mkdir -p /etc/opencode
-RUN mkdir -p \
-        "${WORKSPACE_DIR}" \
-        /home/dev/.local \
-        /home/dev/.config \
-        /home/dev/.cache \
-    && chown -R "${USER_ID}:${GROUP_ID}" \
-        "${WORKSPACE_DIR}" /home/dev/.local /home/dev/.config /home/dev/.cache
-
-# --- opencode CLI ------------------------------------------------------------
-RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path \
-    && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
-    && chown "${USER_ID}:${GROUP_ID}" /usr/local/bin/opencode \
-    && chmod a+rx /usr/local/bin/opencode
-
-# --- headless xdg-open stub --------------------------------------------------
-RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
-    && chmod +x /usr/local/bin/xdg-open
+# Minimal is exactly the harness: the only things this profile adds are the
+# per-project squid / firewall config, the opencode password, and the
+# entrypoint — all layered on the precompiled base. No profile-specific apt
+# packages or pip installs — that is the point of minimal.
 
 # --- squid proxy configuration ----------------------------------------------
+# Per-project (from squid-whitelist.txt) — kept out of the shared base so the
+# base stays reusable across projects.
 COPY squid.conf /etc/squid/squid.conf
 COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
 
 # --- firewall configuration ---------------------------------------------------
+# Per-project (host-ports / intranet-endpoints / agent-dns) — project-specific,
+# so layered here rather than baked into the shared base.
 COPY host-ports.txt /etc/host-ports.txt
 COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
 COPY agent-dns /etc/agent-dns

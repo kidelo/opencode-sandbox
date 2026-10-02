@@ -31,7 +31,7 @@ ocs init my-sandbox && ocs start my-sandbox   # → http://127.0.0.1:4096
 
 The container is based on Debian (python:3.13-slim-bookworm). All software — OpenCode, shell packages, and (in the `full` profile) the dev toolchain — is installed via `apt` during the image build. **No extra toolchain (mise, etc.) needs to be installed on your host, and the container has no access to your Docker daemon.**
 
-> **Fast setup (`ocs init` is quick by design).** The shared, project-independent work — the common shell packages, the `dev` user, and the OpenCode download — is built **once per host** into a local base image (`ocs-base`), and every profile image just layers its own extras on top of it. So the first `ocs rebuild` on a host pays for the base once, and each subsequent `ocs init`/`ocs rebuild` (for any project, any profile) only rebuilds the profile-specific parts — a few seconds, not minutes. `ocs kill` removes this shared base (it's a host-wide cleanup); `ocs clean <name>` leaves it in place so other projects keep working.
+> **Fast setup (`ocs init` is quick by design).** The expensive, project-independent work is built **once per host** into local **base images** (not re-run per project), and every profile just layers its own extras on top of them. There are two levels: `ocs-base` (the common packages + `dev` user + the OpenCode download, from `config/base.Dockerfile`) and `ocs-base-full` (adds the `full` profile's dev toolchain — the apt set + the large pip data/office/PDF/OCR/sci stack — from `config/base-full.Dockerfile`). So the first `ocs rebuild` on a host pays for the base(s) once, and each subsequent `ocs init`/`ocs rebuild` (for any project, **any profile**) only rebuilds the thin per-project tail — a few seconds, not minutes. `ocs kill` removes both shared bases (it's a host-wide cleanup); `ocs clean <name>` leaves them in place so other projects keep working.
 
 > **Want to just start using it?** Read [HOWTO.md](HOWTO.md) — a step-by-step guide covering setup, every way to run OpenCode, the working directories, config, and troubleshooting. This README is the reference and the design rationale.
 
@@ -133,7 +133,7 @@ Interactively creates (each step skipped if already present, default answer is y
 2. **Container image profile** — lists the available `config/Dockerfile.*` profiles (minus the reserved `test` one) and writes your choice as a top-level `dockerfile:` key in the config (default: `minimal`)
 3. `config/opencode.jsonc` — OpenCode model, provider, and permission config
 4. `opencode-sandbox-pre-start-container.sh` — empty hook script sourced before the container starts (see [Hooks](#hooks))
-5. Builds the Docker container image (using the profile you picked). This reuses the host's shared **base image** (`ocs-base`, the common packages + `dev` user + OpenCode, built once per host — so a normal profile build is fast); only the profile-specific extras and your per-project config are added on top.
+5. Builds the Docker container image (using the profile you picked). This reuses the host's precompiled **base images** built once per host — `ocs-base` (common packages + `dev` user + OpenCode) and, for the `full` profile, `ocs-base-full` (the dev toolchain) — so the build is fast; only the thin per-project config is added on top.
 
 **Scriptable (no prompts):** `ocs init` accepts flags so it can run unattended:
 
@@ -255,7 +255,7 @@ Removes:
 - The dedicated Docker network — `ocs-net-<SANDBOX_ID>`
 - Both on-disk trees inside the project — `<project>/.sandbox/build/` and `<project>/.sandbox/state/`
 
-The host-wide shared **base image** (`ocs-base`) is **not** touched by `ocs clean` (it is shared by every project, so cleaning one project should not break the others).
+The host-wide shared **base images** (`ocs-base`, and `ocs-base-full` for the `full` profile) are **not** touched by `ocs clean` (they are shared by every project, so cleaning one project should not break the others).
 
 ```sh
 ocs clean my-project   # everything for my-project (never touches another project)
@@ -270,7 +270,7 @@ After `ocs clean`, the project is back to "never been built on this host". `ocs 
 Cleans up everything the sandbox system created on this host — useful after a crash, a hard abort, or to fully remove a sandbox:
 
 - All leftover sandbox **containers** (running or stopped)
-- All sandbox **images** (`ocs-*`, including the shared base image `ocs-base`)
+- All sandbox **images** (`ocs-*`, including the shared base images `ocs-base` and `ocs-base-full`)
 - All dedicated sandbox **networks** (`ocs-net-*`)
 
 ```sh
@@ -282,7 +282,7 @@ ocs kill --state my-project   # also delete .sandbox/build/ and .sandbox/state/ 
 
 Both `ocs kill` and `ocs clean` match the current `ocs-` / `ocs-net-` names **and** the legacy `opencode-sandbox-` / `opencode-sandbox-net-` names from before the rename, so pre-rename artifacts are still cleaned. Only objects with those name families are ever touched — all other containers, images, and networks in your Docker environment (including those of other projects that don't use this tool) are left completely alone. The command is idempotent: running it with nothing left to do simply reports nothing removed.
 
-> **Note:** `ocs kill` removes the **images** (each project's working + test images, **and** the shared base image `ocs-base`), so `ocs rebuild` is required before starting again and will re-build the base once if it's gone. The per-project state directory (`<project>/.sandbox/state/`) is **not** touched by a plain `kill` — session history survives. Add `--purge` to also remove the disposable build dir, or `--state` to remove both the build dir and the session.
+> **Note:** `ocs kill` removes the **images** (each project's working + test images, **and both** shared base images `ocs-base` and `ocs-base-full`), so `ocs rebuild` is required before starting again and will re-build the base(s) once if they're gone. The per-project state directory (`<project>/.sandbox/state/`) is **not** touched by a plain `kill` — session history survives. Add `--purge` to also remove the disposable build dir, or `--state` to remove both the build dir and the session.
 
 ### `ocs list`
 
@@ -393,7 +393,7 @@ env:
 
 **`dockerfile`** — the container image profile to build from:
 - Selects which `config/Dockerfile.<name>` file `ocs rebuild` builds: the `minimal` profile (harness only, the default) or the `full` profile (full dev toolchain: build tools + a large `pip` data/office/PDF/OCR/sci stack)
-- Every profile builds **on top of the shared base image** `ocs-base` (from `config/base.Dockerfile`), so the common packages, the `dev` user, and the OpenCode download are precompiled once per host and reused — this is what keeps `ocs init`/`ocs rebuild` fast
+- Profiles build **on top of the precompiled base images** — `minimal`/`test` on `ocs-base` (from `config/base.Dockerfile`, the common packages + `dev` user + OpenCode), and `full` on `ocs-base-full` (from `config/base-full.Dockerfile`, which adds the dev toolchain). The bases are built once per host and reused — this is what keeps `ocs init`/`ocs rebuild` fast
 - `ocs init` lists the available profiles (the `config/Dockerfile.*` files, excluding the reserved `test` one) and writes your choice here
 - The `test` profile (`config/Dockerfile.test`, a network-analysis image) is reserved for `ocs test` and **cannot** be selected by a project
 - A rebuild is required after changing this setting
@@ -500,10 +500,11 @@ opencode-sandbox/
 │   ├── ocs-kill                # Remove sandbox containers, images, and networks
 │   └── shared                  # Shared configuration, utilities, and guards (sourced by the ocs-* scripts)
 ├── config/                     # Project config — the single source; copied into target projects by ocs init (except the Dockerfiles)
-│   ├── base.Dockerfile         #   Shared precompiled base (the common packages + dev user + OpenCode); built once per host as `ocs-base`
-│   ├── Dockerfile.minimal      #   image profile (FROM ocs-base): harness only (default)
-│   ├── Dockerfile.full         #   image profile (FROM ocs-base): full dev toolchain (pip data/office/sci stack)
-│   ├── Dockerfile.test         #   image profile (FROM ocs-base): reserved for `ocs test` (network-analysis suite)
+ │   ├── base.Dockerfile         #   Precompiled shared base (common packages + dev user + OpenCode); built once per host as `ocs-base`
+ │   ├── base-full.Dockerfile    #   Precompiled full-pseudo base (`ocs-base` + dev toolchain apt/pip); built once per host as `ocs-base-full`
+ │   ├── Dockerfile.minimal      #   image profile (FROM ocs-base): harness only (default)
+ │   ├── Dockerfile.full         #   image profile (FROM ocs-base-full): full dev toolchain
+ │   ├── Dockerfile.test         #   image profile (FROM ocs-base): reserved for `ocs test` (network-analysis suite)
 │   ├── opencode-sandbox-config.yaml
 │   └── opencode.jsonc
 ├── docker/                     # Container runtime files (copied into the build context by ocs-rebuild-container)
@@ -573,7 +574,7 @@ Items **unchanged** from the pre-redesign state: the `ocs` dispatcher surface, t
 
 | Area | Before | Now |
 |---|---|---|
-| **Image build speed** | Every `ocs init`/`ocs rebuild` re-ran the full apt install, the dev-user setup, and the OpenCode download for that project | The shared, project-independent work lives in a **precompiled base image** `config/base.Dockerfile` → `ocs-base` (built once per host, reused while its labels match). Profiles are `FROM ocs-base` + their own extras, so a profile build only pays for its own `apt`/`pip` layers — `ocs init` is seconds, not minutes |
+| **Image build speed** | Every `ocs init`/`ocs rebuild` re-ran the full apt install, the dev-user setup, and the OpenCode download for that project | The shared, project-independent work lives in **precompiled base images** — `config/base.Dockerfile` → `ocs-base` (common packages + `dev` user + OpenCode) and, for the `full` profile, `config/base-full.Dockerfile` → `ocs-base-full` (adds the dev toolchain apt/pip) — both built once per host and reused while their labels match. Each profile is just a thin `FROM` tail on the right base, so a profile build pays only for its per-project config — `ocs init` is seconds, not minutes, for **any** profile |
 
 ---
 

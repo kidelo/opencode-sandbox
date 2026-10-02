@@ -244,6 +244,87 @@ if [[ "${DOCKERFILE_NAME}" == "test" ]]; then
   cp "${SANDBOX_HOME}/test/listener.py" "${OPENCODE_SANDBOX_DIR}/listener.py"
 fi
 
+# ----------------------------------------------------------------------------
+# Precompiled base images (the "pseudo base" layers). All expensive,
+# project-independent work is hoisted into local base images built ONCE per
+# host and reused by every project, in two levels:
+#
+#   ocs-base       from config/base.Dockerfile        (common apt set, dev user,
+#                                                       opencode CLI, xdg stub)
+#   ocs-base-full  from config/base-full.Dockerfile   (ocs-base + the FULL dev
+#                                                       apt toolchain + the big
+#                                                       pip data/office/PDF/OCR/
+#                                                       sci stack)
+#
+# Every config/Dockerfile.* is then a thin per-project TAIL — the "individual
+# docker config variables" (squid config/whitelist, host-ports,
+# intranet-endpoints, agent-dns, /opencode-password, entrypoint) — layered on
+# the right base:
+#   Dockerfile.minimal  FROM ocs-base
+#   Dockerfile.full     FROM ocs-base-full   <- the big full build is precompiled
+#   Dockerfile.test     FROM ocs-base        (adds only its own net-analysis tools)
+# So `ocs init`/`ocs rebuild` are seconds regardless of profile, on a warmed host.
+#
+# Reuse the cached base of a level when its labels still match:
+#   - ocs-base-api  == OCS_BASE_API (bump it in THIS file whenever a base
+#     Dockerfile's layer set/structure changes — the base-image equivalent of
+#     ocs-test's TEST_API), and
+#   - ocs-base-uid/gid == the host uid:gid (the dev user is baked in with
+#     them; a different user on the same host gets the bases re-baked).
+# Building is a one-time cost per host; the user no longer waits for the
+# shared (or full toolchain) layers on every project.
+# ----------------------------------------------------------------------------
+# Bump whenever config/base.Dockerfile OR config/base-full.Dockerfile changes
+# (layer set / structure) so a stale cached base gets re-built. Both levels are
+# covered by one version: the full base layers directly on the plain base.
+OCS_BASE_API="2"
+
+ensure_base_image() {
+  local tag="${1:?base image name is required}"
+  local dockerfile="${2:?base Dockerfile path is required}"
+  local base_uid="" base_gid="" base_api=""
+  # `|| true`: inspect exits non-zero when the base image does not exist YET —
+  # that is exactly the first-build case, not an error. (A bare assignment
+  # with a failing command substitution would abort the script under set -e.)
+  base_uid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-uid"}}' "${tag}" 2>/dev/null)" || true
+  base_gid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-gid"}}' "${tag}" 2>/dev/null)" || true
+  base_api="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-api"}}' "${tag}" 2>/dev/null)" || true
+  if [[ "${base_uid}" == "${USER_ID}" && "${base_gid}" == "${GROUP_ID}" && "${base_api}" == "${OCS_BASE_API}" ]]; then
+    echo "  ✓ Reusing precompiled base image '${tag}' — skipping its shared layers"
+    return 0
+  fi
+  if [[ ! -f "${dockerfile}" ]]; then
+    echo "  ERROR: ${dockerfile} is required to (re)build the precompiled base image '${tag}'." >&2
+    exit 1
+  fi
+  echo "Building precompiled base image '${tag}' (one-time per host; shared by all projects)..."
+  local base_log
+  base_log="${OPENCODE_SANDBOX_DIR}/docker-build-base.log"
+  if "${CONTAINER_RUNTIME}" build \
+    --build-arg "USER_ID=${USER_ID}" \
+    --build-arg "GROUP_ID=${GROUP_ID}" \
+    --label "ocs-base-uid=${USER_ID}" \
+    --label "ocs-base-gid=${GROUP_ID}" \
+    --label "ocs-base-api=${OCS_BASE_API}" \
+    -t "${tag}" \
+    -f "${dockerfile}" \
+    "${SANDBOX_HOME}/config" > "${base_log}" 2>&1; then
+    echo "  ✓ Base image '${tag}' ready"
+  else
+    echo "  ✗ Base image build failed. Output:"
+    cat "${base_log}"
+    exit 1
+  fi
+}
+
+# Every profile needs the plain base; only the `full` profile additionally
+# pulls in the full-toolchain pseudo-base (the `test` profile adds just its
+# own network-analysis tools straight on ocs-base).
+ensure_base_image "ocs-base" "${SANDBOX_HOME}/config/base.Dockerfile"
+if [[ "${DOCKERFILE_NAME}" == "full" ]]; then
+  ensure_base_image "ocs-base-full" "${SANDBOX_HOME}/config/base-full.Dockerfile"
+fi
+
 echo "Building Container Image '${BUILD_IMAGE_TAG}' from Dockerfile.${DOCKERFILE_NAME} (USER_ID=${USER_ID} GROUP_ID=${GROUP_ID})..."
 BUILD_LOG="${OPENCODE_SANDBOX_DIR}/docker-build.log"
 
