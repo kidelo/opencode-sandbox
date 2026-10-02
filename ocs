@@ -17,6 +17,8 @@ set -euo pipefail
 #   ocs terminal <name>      Attach an opencode session to the running web container
 #   ocs test <name>          Security suite (own one-shot container)
 #   ocs list                 List sandbox projects
+#   ocs status [name]        List sandbox containers on this host (or for one project)
+#   ocs logs [name] [flags]  Show/tail a project's container log (flags passed to `docker logs`)
 #   ocs clean [name]         Nuclear per-project cleanup (containers + images + network + state)
 #   ocs clear [name]         Alias for 'ocs clean'
 #   ocs kill [filter]        Remove sandbox containers, images, networks (all projects or filter)
@@ -58,6 +60,9 @@ commands:
   terminal <name>  Attach an opencode terminal session to the running web container
   test <name>      Run the security test suite (starts its own one-shot container)
   list             List sandbox projects (./sandboxes/)
+  status [name]    List sandbox containers on this host (all, or for one project)
+  logs [name] [flags]  Show/tail a project's container log (flags pass to
+                       `docker logs`: -f, -n, --since, --tail all, ...)
   clean <name>     Nuclear per-project cleanup: containers + images + network + on-disk state
   clear <name>     Alias for 'clean'
   kill [filter]    Remove sandbox containers, images, and networks (all projects or by name)
@@ -132,6 +137,12 @@ case "${cmd}" in
       fi
     done
     ;;
+  status)
+    # ocs status [name] — read-only: lists sandbox containers, never starts one.
+    # The name is optional (filtered in ocs-status); it lists containers by
+    # their shared `ocs-` prefix and accepts a filter substring.
+    exec "${BIN_DIR}/ocs-status" "$@"
+    ;;
   kill)
     exec "${BIN_DIR}/ocs-kill" "$@"
     ;;
@@ -190,6 +201,36 @@ case "${cmd}" in
       exec "${BIN_DIR}/ocs-interactive" "${tui_first}" "$@"
     fi
     echo "ocs: 'ocs tui' needs a project — pass a name ('ocs tui <name>'), or run from inside a sandbox project ('ocs list' shows names)." >&2
+    exit 1
+    ;;
+  logs)
+    # ocs logs [name] [flags...]
+    # Show/tail the container log for a project. All flags are passed through
+    # to `docker logs` (or `podman logs`) verbatim — that runtime's flag set
+    # is authoritative.
+    #
+    # The first argument is a project NAME only if it is a valid sandbox name
+    # that names an existing project under SANDBOXES_BASE; otherwise it is a
+    # flag (e.g. -f, -n, --since, --tail all, or a bare name when run outside a
+    # project) and the project is resolved from the current directory.
+    logs_first="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    if valid_sandbox_name "${logs_first}" && [[ -f "${SANDBOXES_BASE}/${logs_first}/config/opencode-sandbox-config.yaml" ]]; then
+      cd "${SANDBOXES_BASE}/${logs_first}"
+      exec "${BIN_DIR}/ocs-logs" "$@"
+    fi
+    # First arg was a flag (or missing) — resolve the project from CWD.
+    logs_dir="$(find_sandbox_root 2>/dev/null || true)"
+    if [[ -n "${logs_dir}" && -d "${logs_dir}" ]]; then
+      cd "${logs_dir}"
+      # Pass the first arg back only if it is a flag (starts with -); a bare
+      # word outside a project is not a valid container-log flag, so drop it.
+      if [[ -n "${logs_first}" && "${logs_first}" == -* ]]; then
+        exec "${BIN_DIR}/ocs-logs" "${logs_first}" "$@"
+      fi
+      exec "${BIN_DIR}/ocs-logs" "$@"
+    fi
+    echo "ocs: 'ocs logs' needs a project — pass a name ('ocs logs <name>'), or run from inside a sandbox project ('ocs list' shows names)." >&2
     exit 1
     ;;
   rebuild|rebuild-container|start|start-container|web|web-auth|terminal|test|clean|clear)
