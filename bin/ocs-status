@@ -66,8 +66,13 @@ if [[ -z "${PS_OUT}" ]] || [[ "$(wc -l <<< "${PS_OUT}")" -le 1 ]]; then
   exit 0
 fi
 
-# shellcheck disable=SC2016  # ${NAME:+...} is the expansion; the inner single quotes are literal
-echo "Sandbox containers ${NAME:+for '${NAME}'} on this host:"
+# Header: branch on the filter explicitly so there is never a double space
+# in the no-filter case (a ${NAME:+...} expansion would leave two spaces).
+if [[ -n "${NAME}" ]]; then
+  echo "Sandbox containers for '${NAME}' on this host:"
+else
+  echo "Sandbox containers on this host:"
+fi
 echo ""
 printf '%s\n' "${PS_OUT}"
 echo ""
