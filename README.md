@@ -29,7 +29,7 @@ ocs init my-sandbox && ocs start my-sandbox   # → http://127.0.0.1:4096
 
 **Inside the container** there is exactly **one** user read-write directory — `/workspace` (your project's `workspace/`). Everything OpenCode needs besides that is read-only or internal: `opencode.jsonc` (model/provider/permissions) at `/etc/opencode/opencode.jsonc` (**read-only**, so the agent can read its own config but never rewrite it), and the OpenCode session/read-write state tree (persistent, at `/home/dev/.local/share/opencode`). The sandbox's build context and `.sandbox` runtime tree are **never visible** in the container.
 
-The container is based on Debian (python:3.13-slim-bookworm). All software — OpenCode, shell packages, and (in the `full` profile) the dev toolchain — is installed via `apt` during the image build. **No extra toolchain (mise, etc.) needs to be installed on your host, and the container has no access to your Docker daemon.**
+The container is based on Debian (python:3.13-slim-bookworm). All software — OpenCode, shell packages, and (in the `full` profile) the dev toolchain — is installed via `apt` (and `pip` for the Python data/office/PDF/OCR/sci stack) during the image build. **No extra toolchain (mise, etc.) needs to be installed on your host, and the container has no access to your Docker daemon.**
 
 > **Fast setup (`ocs init` is quick by design).** The expensive, project-independent work is built **once per host** into local **base images** (not re-run per project), and every profile just layers its own extras on top of them. There are two levels: `ocs-base` (the common packages + `dev` user + the OpenCode download, from `config/base.Dockerfile`) and `ocs-base-full` (adds the `full` profile's dev toolchain — the apt set + the large pip data/office/PDF/OCR/sci stack — from `config/base-full.Dockerfile`). So the first `ocs rebuild` on a host pays for the base(s) once, and each subsequent `ocs init`/`ocs rebuild` (for any project, **any profile**) only rebuilds the thin per-project tail — a few seconds, not minutes. `ocs kill` removes both shared bases (it's a host-wide cleanup); `ocs clean <name>` leaves them in place so other projects keep working.
 
@@ -501,7 +501,7 @@ opencode-sandbox/
 │   └── shared                  # Shared configuration, utilities, and guards (sourced by the ocs-* scripts)
 ├── config/                     # Project config — the single source; copied into target projects by ocs init (except the Dockerfiles)
  │   ├── base.Dockerfile         #   Precompiled shared base (common packages + dev user + OpenCode); built once per host as `ocs-base`
- │   ├── base-full.Dockerfile    #   Precompiled full-pseudo base (`ocs-base` + dev toolchain apt/pip); built once per host as `ocs-base-full`
+ │   ├── base-full.Dockerfile    #   Precompiled full-toolchain base (`ocs-base` + dev toolchain apt/pip); built once per host as `ocs-base-full`
  │   ├── Dockerfile.minimal      #   image profile (FROM ocs-base): harness only (default)
  │   ├── Dockerfile.full         #   image profile (FROM ocs-base-full): full dev toolchain
  │   ├── Dockerfile.test         #   image profile (FROM ocs-base): reserved for `ocs test` (network-analysis suite)
@@ -593,7 +593,7 @@ This repository is a **fork** of [comsysto/opencode-sandbox](https://github.com/
 | **Workspace & config mounts** | Project mounted at its **same absolute host path** inside the container | **Fixed `/workspace` (rw)** — the single user rw dir — plus `opencode.jsonc` at **`/etc/opencode/opencode.jsonc` (read-only)**, so the agent can read its own config but never rewrite it; the sandbox's `.sandbox` runtime tree is **masked** out of the workspace |
 | **State location** | Global host dir `~/.opencode-sandbox/<SANDBOX_ID>/` | **In-project** `.sandbox/{build,state}/` (opencode state tree persistent across runs; gitignored; removed by `ocs clean`/`ocs kill`) |
 | **Container lifecycle** | Long-running web container as the norm | **Build-once, one-shot runs** — the image is the only persistent artifact; web / TUI / one-shot / test are all fresh `docker run`s that clean themselves up |
-| **Run modes** | Web UI (`ocs start`) | Added **`ocs tui`** (TUI) and **`ocs run`** (markdown prompt file **or inline prompt string**) one-shot modes |
+| **Run modes** | Web UI (`ocs start`) | Added **`ocs tui`** (TUI — with `-c`/`--continue`, `-s`/`--session`, `--fork` to resume an aborted session) and **`ocs run`** (markdown prompt file **or inline prompt string**) one-shot modes |
 | **Security** | Manual | **`ocs test`** automated suite (deterministic assertions + an AI-agent red-team) that runs its own one-shot container from the reserved `Dockerfile.test` profile (image `ocs-<ID>-test`) and **removes only the test image on FAIL** — the working image is never clobbered |
 | **Cleanup** | Manual `docker rm` | **`ocs kill`** — idempotent removal of all sandbox containers, images, and networks without touching anything else |
 | **Config layout** | Config at project root; templates in `init-templates/` | **`config/` single source of truth**, plus `docker/` for runtime files and `bin/shared` for the shared library — no duplicated templates |
