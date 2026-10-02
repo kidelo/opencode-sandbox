@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# ocs-status — show sandbox containers (running and stopped) on this host.
+#
+#   ocs status            # every ocs-*/opencode-sandbox-* container
+#   ocs status my-sandbox # only containers whose name contains <name>
+#
+# Read-only, idempotent. Uses `docker ps` (or podman) with a client-side
+# filter; no python/jq dependency.
+
+set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/shared"
+
+usage() {
+  cat <<'EOF'
+usage: ocs status [name]
+
+  Show sandbox containers (running + stopped) on this host.
+  Without a name, every ocs-*/opencode-sandbox-* container is listed.
+  With a name, only containers whose name contains <name>.
+  (One-shot containers such as ocs tui / ocs run use --rm, so they do not
+   appear here after they finish — only live containers persist.)
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+NAME="${1:-}"
+if [[ -n "${NAME}" ]] && ! valid_sandbox_name "${NAME}"; then
+  echo "ocs status: '${NAME}' is not a valid project name." >&2
+  exit 2
+fi
+
+# docker's `ps --format table ...` aligns columns and emits a header row
+# itself — no post-processing needed. `--filter name=<s>` is a substring
+# match on the container name, so a partial name filters on that substring
+# (every sandbox container is ocs-<proj>-<hash>[-tui-$$/-run-$$/-test-$$/
+# -peer-*/-lst-*], so filtering on a substring like the project name or a
+# run-specific fragment all work). Without a filter, list every container
+# whose name starts with the shared `ocs-` or legacy `opencode-sandbox-`
+# prefix.
+if [[ -n "${NAME}" ]]; then
+  PS_OUT="$("${CONTAINER_RUNTIME}" ps -a \
+      --filter "name=${NAME}" \
+      --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Networks}}' \
+      2>/dev/null || true)"
+else
+  PS_OUT="$("${CONTAINER_RUNTIME}" ps -a \
+      --filter "name=ocs-" \
+      --filter "name=opencode-sandbox-" \
+      --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}\t{{.Networks}}' \
+      2>/dev/null || true)"
+fi
+
+# "No rows" = empty output OR exactly one line (the header docker emits even
+# when the filter matches nothing).
+if [[ -z "${PS_OUT}" ]] || [[ "$(wc -l <<< "${PS_OUT}")" -le 1 ]]; then
+  if [[ -n "${NAME}" ]]; then
+    echo "No sandbox containers for '${NAME}' on this host."
+  else
+    echo "No sandbox containers on this host."
+  fi
+  echo "(Start one: ocs start <name>  ·  ocs tui <name>  ·  ocs run <name> <prompt>)"
+  exit 0
+fi
+
+# shellcheck disable=SC2016  # ${NAME:+...} is the expansion; the inner single quotes are literal
+echo "Sandbox containers ${NAME:+for '${NAME}'} on this host:"
+echo ""
+printf '%s\n' "${PS_OUT}"
+echo ""
+echo "One-shot doors (ocs tui / ocs run / ocs test) run with --rm, so their containers disappear on exit — they typically do not appear here."
+echo "To discard one project's running + stopped containers and leftover artifacts, use: ocs clean <name>"

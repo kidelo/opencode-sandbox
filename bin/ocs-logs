@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# ocs-logs — show or tail the log of this project's sandbox container.
+#
+#   ocs logs                 # last 200 lines of the container log
+#   ocs logs -f              # follow (Ctrl+C to stop)
+#   ocs logs -n 50           # last 50 lines
+#   ocs logs --since 10m     # only the last 10 minutes
+#   ocs logs --tail all      # the entire log
+#   ocs logs -t              # include timestamps
+#
+# The project is resolved by the ocs dispatcher (ocs logs <name> [flags]); by
+# the time this script runs, CWD is the sandbox project root. All flags are
+# passed through to `docker logs` (or `podman logs`) verbatim — that
+# runtime's flag set is authoritative.
+#
+# One-shot caveat: the ocs tui / ocs run / ocs test doors run with `--rm`, so
+# their containers disappear on exit. Their logs are available only while the
+# door is still active (use `ocs logs -f` for a live door).
+
+set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/shared"
+
+usage() {
+  cat <<'EOF'
+usage: ocs logs [flags]
+
+  Show or tail the log of this project's sandbox container. All flags are
+  passed through to `docker logs` (or `podman logs`):
+    -f                  follow (Ctrl+C to stop)
+    -n <N>              show only the last <N> lines (default: 200)
+    --since <ts>        start from a timestamp / relative (e.g. 10m, 1h)
+    --tail all          show the entire log
+    -t                  include timestamps
+  (See your runtime's `docker logs --help` for the full list of flags.)
+
+  The project is resolved by the ocs dispatcher: `ocs logs <name>` from
+  anywhere, or a bare `ocs logs` from inside a sandbox project.
+
+  One-shot doors (ocs tui / ocs run / ocs test) use --rm, so their containers
+  are gone on exit and their logs are only available while the door is alive.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+# shellcheck disable=SC2059  # $@ is intentional — pass through verbatim
+PASS_THROUGH=("$@")
+
+CONTAINER="${CONTAINER_NAME}"
+
+# Look for a live or stopped-but-still-existent container with this name.
+# We inspect; we do not create.
+STATE="$("${CONTAINER_RUNTIME}" inspect --format '{{.State.Running}}' "${CONTAINER}" 2>/dev/null || true)"
+if [[ -z "${STATE}" ]]; then
+  echo "ocs logs: no container named '${CONTAINER}' exists for this project."
+  echo "          One-shot doors (ocs tui / ocs run / ocs test) use --rm, so"
+  echo "          their containers disappear on exit — logs are only available"
+  echo "          while a door is still active (e.g. ocs start or ocs tui)."
+  echo "          Use 'ocs status' to see what is currently running."
+  exit 1
+fi
+
+# Default -n 200 if the caller didn't specify one.
+HAS_TAIL=""
+for arg in "${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}"; do
+  [[ "${arg}" == "-n" || "${arg}" == "--tail" ]] && HAS_TAIL=1 && break
+done
+if [[ -z "${HAS_TAIL}" ]]; then
+  PASS_THROUGH=(-n 200 "${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"}")
+fi
+
+echo ">> container: ${CONTAINER} ${STATE}"
+# The flags are passed verbatim to the runtime (word-splitting is intentional —
+# each flag is a standalone token).
+# shellcheck disable=SC2086  # word-splitting is the point; the caller passes tokens
+exec "${CONTAINER_RUNTIME}" logs ${PASS_THROUGH[@]+"${PASS_THROUGH[@]}"} "${CONTAINER}"
