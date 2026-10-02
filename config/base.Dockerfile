@@ -12,9 +12,9 @@
 # opencode, re-creates the user, re-lays down the harness. With this base,
 # each project build only runs its own profile-specific apt/pip layers on top
 # of a cached base. The base is built once per host (and re-built only when
-# this file's content version or the baked uid/gid changes — see the
-# ocs-base-api / ocs-base-uid / ocs-base-gid labels checked in `ensure_base_image`).
-#
+# its layer set / structure / opencode version or the baked uid/gid changes
+# — see the ocs-base-api / ocs-base-uid / ocs-base-gid labels checked in
+# `ensure_base_image`).
 # It is deliberately profile-neutral: only the OS packages + user + opencode
 # that are common to EVERY profile. Profile-specific packages, the squid /
 # firewall per-project config, /opencode-password, and the entrypoint stay in
@@ -79,14 +79,18 @@ RUN mkdir -p \
         "${WORKSPACE_DIR}" /home/dev/.local /home/dev/.config /home/dev/.cache
 
 # --- opencode CLI ------------------------------------------------------------
-# The most network-heavy shared step (an external download). Hoisting it here
-# is what makes per-project builds fast: a profile build no longer re-fetches
-# it. OpenCode is not in Debian; the official installer is the documented
-# source for every profile.
-RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path \
+# Pinned to a specific release so the sandbox does not silently track "latest".
+# The sandbox depends on specific CLI flags (TUI -c/--continue, -s/--session,
+# --fork; ocs run non-interactive mode) that can drift between releases. To
+# bump, change the default below *and* the OPENCODE_BUILD_VERSION constant in
+# bin/ocs-rebuild-container (single source passed as --build-arg), then bump
+# OCS_BASE_API there so a stale cached base image gets re-baked.
+ARG OPENCODE_BUILD_VERSION=1.18.32
+RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path --version "${OPENCODE_BUILD_VERSION}" \
     && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
     && chown "${USER_ID}:${GROUP_ID}" /usr/local/bin/opencode \
-    && chmod a+rx /usr/local/bin/opencode
+    && chmod a+rx /usr/local/bin/opencode \
+    && test "$(opencode --version)" = "${OPENCODE_BUILD_VERSION}"
 
 # --- headless xdg-open stub --------------------------------------------------
 RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \

@@ -22,6 +22,35 @@ chmod u=rwx,go= "${OPENCODE_SANDBOX_DIR}"
 mkdir -p "${OPENCODE_STATE_DIR}"
 chmod u=rwx,go= "${OPENCODE_STATE_DIR}"
 
+# ---------------------------------------------------------------------------
+# Concurrency guard: serialize ocs-rebuild-container for ONE project across
+# parallel invocations (two terminals, an ocs-init from one + a manual rebuild
+# from another, or a stray retry). Different projects can still rebuild in
+# parallel (one lock per project, keyed by the build dir). The lock lives
+# inside the build dir so `ocs clean` (which removes the build tree) also
+# removes the lock.
+#
+# We open fd 9 ONCE and hold it open for the life of the script; flock is
+# released automatically by the kernel when the fd closes on exit (clean or
+# crash), so there is no lock to clean up and no stale state.
+# ---------------------------------------------------------------------------
+if ! command -v flock >/dev/null 2>&1; then
+  echo "ocs rebuild: 'flock' is required for the concurrency guard (util-linux on Linux, lockfile on BSD)." >&2
+  exit 1
+fi
+REBUILD_LOCK="${OPENCODE_SANDBOX_DIR}/rebuild.lock"
+# Hold fd 9 open (and, with us, the lock) for the rest of this process.
+exec 9>"${REBUILD_LOCK}"
+# flock -n returns 1 when another process holds the lock. The `if` guard
+# keeps `set -e` from aborting before the explanatory message can print.
+if ! flock -n 9 2>/dev/null; then
+  # shellcheck disable=SC2153  # SANDBOX_ID is defined in shared
+  echo "ocs rebuild: a rebuild for project '${SANDBOX_ID}' is already running (lock: ${REBUILD_LOCK})." >&2
+  echo "            Another 'ocs rebuild' for this project started first and is still in progress." >&2
+  echo "            Wait for it to finish, then re-run 'ocs rebuild ${SANDBOX_ID}'." >&2
+  exit 75
+fi
+
 # Ensure the workspace (single rw dir) exists so a run/`ocs start` can mount it.
 if [[ -n "${SANDBOX_WORKSPACE_DIR:-}" && ! -d "${SANDBOX_WORKSPACE_DIR}" ]]; then
   mkdir -p "${SANDBOX_WORKSPACE_DIR}"
@@ -275,9 +304,16 @@ fi
 # shared (or full toolchain) layers on every project.
 # ----------------------------------------------------------------------------
 # Bump whenever config/base.Dockerfile OR config/base-full.Dockerfile changes
-# (layer set / structure) so a stale cached base gets re-built. Both levels are
-# covered by one version: the full base layers directly on the plain base.
-OCS_BASE_API="2"
+# (layer set / structure / opencode version) so a stale cached base gets re-built.
+# Both levels are covered by one version: the full base layers directly on the
+# plain base.
+#
+# OPENCODE_BUILD_VERSION is the single source of the opencode CLI version the
+# sandbox ships (passed to base.Dockerfile as --build-arg). Bumping it (and
+# OCS_BASE_API, since base.Dockerfile's layer set effectively changes) forces
+# both level base images to be rebuilt on the next ocs rebuild.
+OCS_BASE_API="3"
+OPENCODE_BUILD_VERSION="1.18.32"
 
 ensure_base_image() {
   local tag="${1:?base image name is required}"
@@ -303,6 +339,7 @@ ensure_base_image() {
   if "${CONTAINER_RUNTIME}" build \
     --build-arg "USER_ID=${USER_ID}" \
     --build-arg "GROUP_ID=${GROUP_ID}" \
+    --build-arg "OPENCODE_BUILD_VERSION=${OPENCODE_BUILD_VERSION}" \
     --label "ocs-base-uid=${USER_ID}" \
     --label "ocs-base-gid=${GROUP_ID}" \
     --label "ocs-base-api=${OCS_BASE_API}" \
