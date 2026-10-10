@@ -537,16 +537,35 @@ build_run_flags() {
   POLICY_CPUS="$(read_policy cpus 2>/dev/null || true)"
   POLICY_PIDS="$(read_policy pids 2>/dev/null || true)"
   POLICY_DISK="$(read_policy disk 2>/dev/null || true)"
+  POLICY_NOLFILE="$(read_policy nofile 2>/dev/null || true)"
+  POLICY_SECCOMP="$(read_policy seccomp 2>/dev/null || true)"
   [[ -n "${POLICY_MEMORY}" ]] || POLICY_MEMORY="4g"
   [[ -n "${POLICY_CPUS}" ]] || POLICY_CPUS="2.0"
   [[ -n "${POLICY_PIDS}" ]] || POLICY_PIDS="256"
   [[ -n "${POLICY_DISK}" ]] || POLICY_DISK="8g"
+  [[ -n "${POLICY_NOLFILE}" ]] || POLICY_NOLFILE="8192"
+  [[ -n "${POLICY_SECCOMP}" ]] || POLICY_SECCOMP="on"
   RUN_FLAGS+=("--memory=${POLICY_MEMORY}" "--memory-swap=${POLICY_MEMORY}")
   RUN_FLAGS+=("--cpus=${POLICY_CPUS}")
   RUN_FLAGS+=("--pids-limit=${POLICY_PIDS}")
   RUN_FLAGS+=("--ulimit=fsize=$(to_bytes "${POLICY_DISK}")")
+  RUN_FLAGS+=("--ulimit=nofile=${POLICY_NOLFILE}:${POLICY_NOLFILE}")
   RUN_FLAGS+=("--security-opt=no-new-privileges:true")
-  RUN_LOG+=("    limits   (doS guard): memory=${POLICY_MEMORY}, cpus=${POLICY_CPUS}, pids=${POLICY_PIDS}, fsize=${POLICY_DISK}, no-new-privileges=true")
+  RUN_LOG+=("    limits   (doS guard): memory=${POLICY_MEMORY}, cpus=${POLICY_CPUS}, pids=${POLICY_PIDS}, fsize=${POLICY_DISK}, nofile=${POLICY_NOLFILE}, no-new-privileges=true")
+
+  # seccomp: Docker applies its built-in default allow-list seccomp profile to
+  # every container automatically (blocks ~44 escape/privesc syscalls: prctl,
+  # ptrace, mount, unshare, bpf, kexec_load, setns, io_uring, add_key, …).
+  # We do NOT ship a custom profile (custom = risk of allowing things Docker's
+  # default denies). The 'seccomp:' config key is an OPT-OUT only: 'off'
+  # unsets the profile for debugging; 'on' (default) does nothing extra (Docker
+  # already enforces its built-in default — no flag needed).
+  if [[ "${POLICY_SECCOMP}" == "off" ]]; then
+    RUN_FLAGS+=("--security-opt=seccomp=unconfined")
+    RUN_LOG+=("    seccomp  (unconfined — explicit config choice; Docker default NOT enforced)")
+  else
+    RUN_LOG+=("    seccomp  (Docker built-in default profile enforced)")
+  fi
 
   # In-container filesystem hardening: run every door on a READ-ONLY overlay
   # rootfs plus a sized tmpfs map. Consequences:
@@ -593,6 +612,54 @@ build_run_flags() {
   # The single user read-write dir, at a fixed in-container path.
   RUN_FLAGS+=(-v "${SANDBOX_WORKSPACE_DIR}:/workspace")
   RUN_LOG+=("    workspace (rw): ${SANDBOX_WORKSPACE_DIR} -> /workspace")
+
+  # --- Sensitive auto-exec path overlays (H1) --------------------------------
+  # The workspace is rw and the agent has write:allow, so it could plant
+  # auto-executable files that fire on the HOST later:
+  #   .git/hooks/*     -> runs on `git commit`/`git checkout` (host)
+  #   .husky/*         -> runs on `git add`/`commit`/`push` (husky hook)
+  #   .vscode/*        -> tasks.json / settings.json commands run locally
+  #   .github/workflows/*  -> runs on the next GitHub push (host)
+  #   .devcontainer/*  -> runs on `devcontainer up` (host)
+  # Fix: for every such path that EXISTs in the source tree, add a
+  # READ-ONLY bind mount pinned over the workspace mount. Mounted AFTER the
+  # broad `-v workspace` (deeper mount added later wins) so the ro view is
+  # what the agent sees. A write inside the container then fails EROFS, and
+  # the host-side path is the one that actually runs on commit/edit/deploy.
+  #
+  # Only paths that exist on the host at run time get a mount (a fresh `git
+  # init` where `.git/hooks` doesn't exist yet must not break docker). The
+  # default protect set is fixed; the user can ADD paths via the
+  # `sensitive-paths:` section (stored in sensitive-paths.txt, relative to the
+  # workspace root).
+  local SENSITIVE_PATHS_FILE="${OPENCODE_SANDBOX_DIR}/sensitive-paths.txt"
+  local SENSITIVE_COUNT=0
+  local _rel _host_src _ctn_dst
+  local _builtin=(
+    ".git/hooks"
+    ".git/config"
+    ".husky"
+    ".vscode"
+    ".github/workflows"
+    ".devcontainer"
+  )
+  local _protect_candidates=( "${_builtin[@]}" )
+  if [[ -f "${SENSITIVE_PATHS_FILE}" ]]; then
+    while IFS= read -r _rel || [[ -n "${_rel}" ]]; do
+      [[ -z "${_rel}" || "${_rel}" == "#"* ]] && continue
+      _protect_candidates+=( "${_rel}" )
+    done < "${SENSITIVE_PATHS_FILE}"
+  fi
+  for _rel in "${_protect_candidates[@]}"; do
+    _host_src="${SANDBOX_WORKSPACE_DIR}/${_rel}"
+    [[ -e "${_host_src}" ]] || continue
+    _ctn_dst="/workspace/${_rel}"
+    RUN_FLAGS+=("--mount" "type=bind,src=${_host_src},dst=${_ctn_dst},ro")
+    SENSITIVE_COUNT=$(( SENSITIVE_COUNT + 1 ))
+  done
+  if [[ ${SENSITIVE_COUNT} -gt 0 ]]; then
+    RUN_LOG+=("    sensitive (ro): ${SENSITIVE_COUNT} auto-exec path(s) pinned read-only over the rw workspace")
+  fi
 
   # Self-hosted case: the whole project is the workspace, and the runtime
   # base (.sandbox: build context + opencode state) lives INSIDE it — so it

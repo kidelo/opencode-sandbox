@@ -243,8 +243,16 @@ read-only-mounts:               # extra host dirs mounted READ-ONLY (agent can r
 # memory: 4g
 # pids: 256
 # disk: 8g                      # max size of a single file (RLIMIT_FSIZE)
+# nofile: 8192                  # max open file descriptors (RLIMIT_NOFILE)
 # timeout: 0                    # wall-clock cap for `ocs tui` / `ocs run` (0 = none)
 # model: ollama/qwen3.8:27b     # -m pin for `ocs tui` / `ocs run`
+
+# Extra hardening (optional; defaults shown). See README → Extra hardening.
+# seccomp: on                   # on | off — Docker default seccomp profile (off = opt-out)
+# landlock: off                 # on | off — kernel-enforced write boundary (opt-in, kernel >= 5.13)
+# egress-audit: off             # on | off — squid access-log to /run/squid-access.log
+sensitive-paths:                # extra workspace sub-paths to pin READ-ONLY (adds to the built-in set)
+  # - .github/
 ```
 
 - **`http-domain-whitelist`** — domains the Squid proxy will forward. **Empty by default — nothing is allowed until you add a domain.** A leading dot covers subdomains.

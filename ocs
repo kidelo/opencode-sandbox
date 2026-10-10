@@ -72,8 +72,15 @@ project is required for most commands; without a name the sandbox project of
 the current directory is used.
 
 per-project policy (opencode-sandbox-config.yaml, see README "Per-project policy"):
-  cpus: <num>  memory: <Nk|Nm|Ng>  pids: <int>  disk: <Nk|Nm|Ng>  timeout: <sec>  model: <provider/name>
-  Defaults when unset: cpus=2.0, memory=4g, pids=256, disk=8g, timeout=0 (none), model=shared.
+  cpus: <num>  memory: <Nk|Nm|Ng>  pids: <int>  disk: <Nk|Nm|Ng>  nofile: <int>  timeout: <sec>  model: <provider/name>
+  Defaults when unset: cpus=2.0, memory=4g, pids=256, disk=8g, nofile=8192, timeout=0 (none), model=shared.
+
+extra hardening (see README "Extra hardening"):
+  seccomp: on|off (default on)         — Docker's default seccomp profile; 'off' is an explicit opt-out.
+  landlock: on|off (default off)       — kernel write boundary (Landlock); opt-in, requires kernel >= 5.13.
+  egress-audit: on|off (default off)   — squid access-log to /run/squid-access.log (bounded by --memory).
+  sensitive-paths: <list>              — extra workspace sub-paths to pin read-only (built-in: .git/hooks,
+                                       .git/config, .husky, .vscode, .github/workflows, .devcontainer).
 EOF
 }
 

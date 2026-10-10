@@ -78,6 +78,26 @@ RUN mkdir -p \
     && chown -R "${USER_ID}:${GROUP_ID}" \
         "${WORKSPACE_DIR}" /home/dev/.local /home/dev/.config /home/dev/.cache
 
+# --- git hook neutralization (H1) --------------------------------------------
+# Every container starts with `core.hooksPath` pointing at /dev/null at the
+# SYSTEM gitconfig scope. Consequences:
+#   - In-container `git commit`/`git add`/`git push` never fire user/planted
+#     hooks (they'd have to sit in `.git/hooks/` which is ro-mounted anyway).
+#   - A pre-existing repo that has `core.hooksPath` set at the local scope
+#     (`.git/config`) is still neutralized, because the system scope wins...
+#     actually NOT — local scope overrides system scope in git's precedence.
+#
+# So the real defence is:
+#   (a) the read-only bind overlay on `.git/hooks` (in bin/shared)
+#   (b) the read-only bind overlay on `.git/config` (in bin/shared)
+#   (c) this system-scope neutralization catches the case where the user's
+#       own repo doesn't pin `core.hooksPath` but a sub-branch/alt-clone
+#       resolves it to some unexpected location — belt and braces.
+#
+# The HOST-SIDE git (a different fs scope, different container) is unaffected
+# — this only bakes the SYSTEM gitconfig of THIS container's image.
+RUN git config --system core.hooksPath /dev/null
+
 # --- opencode CLI ------------------------------------------------------------
 # Pinned to a specific release so the sandbox does not silently track "latest".
 # The sandbox depends on specific CLI flags (TUI -c/--continue, -s/--session,

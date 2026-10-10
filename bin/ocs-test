@@ -65,9 +65,13 @@ EP_IP="${SUBNET_BASE%.0}.50"
 # ran BEFORE the COPY of the project allow-lists, so the baked rule was
 # wiped — cases 15/16; v5 ships the read-only-rootfs entrypoint (no per-dir
 # prep — tmpfs dirs are mode=1777 and squid is pid_filename none, required
-# once every door runs --read-only + tmpfs — cases 22/23) so stale cached
-# test images get rebuilt.
-TEST_API="5"
+# once every door runs --read-only + tmpfs — cases 22/23); v6 ships the
+# extra hardening (nofile ulimit, seccomp off-knob, sensitive-path ro
+# overlays, git hook neutralization baked in the base, Landlock helper,
+# squid dst-ACL rebinding guard, QUIC/DoT/DoH drops, egress-audit knob,
+# sensitive-paths list — cases 24-29) so stale cached test images get
+# rebuilt with the new profile layers.
+TEST_API="6"
 HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API}"
 
 # Rebuild only when the cached image is missing or was built before the
@@ -230,6 +234,8 @@ CIDR="$(tr -d '[:space:]' < "${SANDBOX_CIDR_FILE}" 2>/dev/null || echo 10.77.0.0
   TEST_POLICY_CPUS="$(read_policy cpus || true)"
   TEST_POLICY_PIDS="$(read_policy pids || true)"
   TEST_POLICY_DISK="$(read_policy disk || true)"
+  TEST_POLICY_NOLFILE="$(read_policy nofile || true)"
+  TEST_POLICY_SECCOMP="$(read_policy seccomp || true)"
 
   sentinel_hex="$(head -c 8 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n' 2>/dev/null || true)"
 if [[ -n "${sentinel_hex}" ]]; then
@@ -264,6 +270,8 @@ printf '%s\n' "${FWD_SENTINEL}" > "${FWD_MOUNT_DIR}/.ocs-fwd-sentinel"
   -e "POLICY_CPUS=${TEST_POLICY_CPUS}" \
   -e "POLICY_PIDS=${TEST_POLICY_PIDS}" \
   -e "POLICY_DISK=${TEST_POLICY_DISK}" \
+  -e "POLICY_NOLFILE=${TEST_POLICY_NOLFILE}" \
+  -e "POLICY_SECCOMP=${TEST_POLICY_SECCOMP}" \
   -v "${FWD_MOUNT_DIR}:/mnt/ocs-fwd:rw" \
   "${EXTRA_TEST_MOUNTS[@]}" \
   "${RUN_FLAGS[@]}" \

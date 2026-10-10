@@ -49,6 +49,16 @@ COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
 COPY host-ports.txt /etc/host-ports.txt
 COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
 COPY agent-dns /etc/agent-dns
+COPY landlock /etc/landlock
+COPY egress-audit /etc/egress-audit
+
+# --- landlock kernel-boundary helper (opt-in) ---------------------------------
+# `landlock: on` in the project config makes the entrypoint run this helper at
+# startup to enforce a write boundary on top of the ro mounts / caps drop.
+# Baked to a neutral path (no `test` suffix) so the same helper works in all
+# three profiles without the name implying test-only.
+COPY landlock.py /opt/ocs/landlock.py
+RUN chmod 0644 /opt/ocs/landlock.py
 
 # --- opencode password + entrypoint ------------------------------------------
 COPY opencode-password /opencode-password

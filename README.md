@@ -50,7 +50,8 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 - [Container lifecycle](#container-lifecycle)
 - [Network isolation](#network-isolation)
 - [Configuration](#configuration--configopencode-sandbox-configyaml)
-  - [Per-project policy](#per-project-policy) (`cpus`, `memory`, `pids`, `timeout`, `model`)
+   - [Per-project policy](#per-project-policy) (`cpus`, `memory`, `pids`, `timeout`, `model`)
+   - [Extra hardening](#extra-hardening) (`seccomp`, `landlock`, `egress-audit`, `nofile`, `sensitive-paths`)
 - [Hooks](#hooks)
 - [Project layout](#project-layout)
 - [Per-project state](#per-project-state)
@@ -235,8 +236,8 @@ Runs the sandbox security test suite. **No running container needed** — `ocs t
 
 `ocs test` builds and runs from the **reserved** `config/Dockerfile.test` profile (a network-analysis image: `nmap`, `tcpdump`, DNS/traceroute tools, `python3`, `jq`). It is stored under its own tag `ocs-<SANDBOX_ID>-test`, so running the suite **never changes** the project's working image (built from `minimal` or `full`). The test image is cached for a fast re-run; it is removed on a fail/crash and by `ocs kill`.
 
-The suite has five kinds of checks (23 cases in total):
-- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network (its own `/24` inside `sandbox-network-cidr`), that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, that **resource limits** (memory, CPU, process count, single-file size) plus `no-new-privileges` are actually enforced, that the **rootfs is read-only** with a sized `/tmp` tmpfs (and the workspace + state binds remain writable), that **IPv6 is disabled** in the namespace, that the **DNS-tunnel gate** is configured as `agent-dns` states (dev-uid `:53` dropped while squid keeps its proxy path), that `config/opencode.jsonc` is mounted read-only, that `/workspace` is the writable dir, that the configured `opencode-port` reaches the run environment, and that squid is running exactly when `http-domain-whitelist` is non-empty (state consistency).
+The suite has five kinds of checks (29 cases in total):
+- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network (its own `/24` inside `sandbox-network-cidr`), that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, that **resource limits** (memory, CPU, process count, single-file size, **open file descriptors**) plus `no-new-privileges` are actually enforced, that the **rootfs is read-only** with a sized `/tmp` tmpfs (and the workspace + state binds remain writable), that **IPv6 is disabled** in the namespace, that the **DNS-tunnel gate** is configured as `agent-dns` states (dev-uid `:53` dropped while squid keeps its proxy path), that **QUIC/DoT/DoH UDP/TCP (UDP:443, UDP:853, TCP:853, TCP:8853) are blocked for the dev uid** even if a future ACCEPT is accidentally added, that `config/opencode.jsonc` is mounted read-only, that `/workspace` is the writable dir, that the configured `opencode-port` reaches the run environment, that squid is running exactly when `http-domain-whitelist` is non-empty (state consistency), that **auto-exec host-side paths** (`.git/hooks`, `.git/config`, `.husky`, `.vscode`, `.github/workflows`, `.devcontainer`, plus any `sensitive-paths:` entries) are **pinned read-only over the rw workspace**, that **`git commit` cannot fire plugins / planted hooks** (the in-image system gitconfig points `core.hooksPath` to a null sink), that **squid cannot be used to reach the AWS metadata IP, loopback, or any private/link-local range** via IP-literal, DNS rebinding, or `dst` ACL bypass, that **Docker's default seccomp profile** is still attached (mode 2) unless the project explicitly `seccomp: off`s, and that the **Landlock helper ran** when `landlock: on` is set (with a machine-readable `/run/.landlock-{applied,skipped,failed,off}` marker).
 - **Positive egress (the allowed path works)** — proves a **listed** endpoint is actually reachable, not only that unlisted ones are blocked: `ocs test` bakes two harness targets into the *test image only* (via build args in `Dockerfile.test`) and starts short-lived listener containers for them — an **intranet endpoint** `<sandbox-net>.50:8765` (the case must connect to it, and to the adjacent unlisted port it must *not* be able to) and a **host port** `docker.host:8766` (same positive/negative contrast). These rules exist only in the `ocs-<SANDBOX_ID>-test` image and its two listener containers, both removed with the test image — the working image's firewall is never changed.
 - **Run-wiring (env / mounts)** — `ocs test` injects a random sentinel env var (and a fixed one) and a temp dir — pre-filled with a sentinel file — mounted read-write at `/mnt/ocs-fwd`, and the cases assert the env value and the sentinel file both arrive intact (plus that the mount is writable): the same env / `-v` plumbing used by `env-passthrough` / `env` / `volume-mounts` / `read-only-mounts`.
 - **Multi-container** — starts a real second container on a scratch network and asserts that the sandbox cannot resolve its name or connect to its IP: two running sandboxes never see each other.
@@ -408,6 +409,23 @@ volume-mounts:                 # extra host dirs mounted read-WRITE (container: 
 
 read-only-mounts:              # extra host dirs mounted READ-ONLY (container: host)
   # /data: "$HOME/datasets"
+
+# --- Per-project policy (see "Per-project policy") --------------------------
+# cpus: 2.0
+# memory: 4g
+# pids: 256
+# disk: 8g
+# nofile: 8192
+# timeout: 0
+# model: ollama/qwen3.8:27b
+
+# --- Extra hardening (see "Extra hardening") --------------------------------
+# seccomp: on          # on (default) | off — Docker's default seccomp profile
+# landlock: off        # on | off (default) — kernel-enforced write boundary
+# egress-audit: off    # on | off (default) — squid access-log to /run
+sensitive-paths:        # extra workspace sub-paths to pin read-only
+  # - .github/
+  # - .husky/_
 ```
 
 **`sandbox-name`** — human-readable project identifier (required):
@@ -505,16 +523,35 @@ Six optional top-level keys tune each sandbox without forking the code. Every ke
 | `memory:` | Docker memory limit (and `--memory-swap`) | `Nk` or `Nm` or `Ng` (e.g. `512m`, `1g`, `4g`) | `4g` | every `docker run` (all doors, incl. `ocs test`) |
 | `pids:` | Docker PID limit | positive integer (e.g. `128`, `256`) | `256` | every `docker run` (all doors, incl. `ocs test`) |
 | `disk:` | max size of a single file (`RLIMIT_FSIZE` / `--ulimit fsize`) | `Nk` / `Nm` / `Ng` with `N >= 1` (e.g. `512m`, `1g`, `8g`) | `8g` | every `docker run` (all doors, incl. `ocs test`) |
+| `nofile:` | max open file descriptors (`RLIMIT_NOFILE` / `--ulimit nofile`) | integer `64`-`1048576` (e.g. `1024`, `8192`) | `8192` | every `docker run` (all doors, incl. `ocs test`) |
 | `timeout:` | wall-clock session cap, seconds | integer `>= 0` (`0` = no limit) | `0` | `ocs tui` and `ocs run` only |
 | `model:` | OpenCode model pin | provider/model id (e.g. `ollama/qwen3.8:27b`) | shared `OPENCODE_MODEL` constant in `bin/shared` | `ocs tui` and `ocs run` only |
 
-- **`cpus` / `memory` / `pids` / `disk` (resource limits).** These replace the hard-coded DoS-guard defaults for *this project only* and are applied to **every** door of the project, including the one-shot `ocs test` container. `memory` also sets `--memory-swap` to the same value; `disk` caps the size of a **single file** via `RLIMIT_FSIZE` (it is not a total-filesystem quota — the `/tmp` / `/run` / `/var/tmp` / `$HOME` trees are sized tmpfs bounded by `--memory`, and total usage in the rw bind mounts is left to the host user's own quota); `no-new-privileges` is always applied and is not a policy key. Example: `cpus: 0.5`  `memory: 2g`  `pids: 128`  `disk: 8g`.
+- **`cpus` / `memory` / `pids` / `disk` / `nofile` (resource limits).** These replace the hard-coded DoS-guard defaults for *this project only* and are applied to **every** door of the project, including the one-shot `ocs test` container. `memory` also sets `--memory-swap` to the same value; `disk` caps the size of a **single file** via `RLIMIT_FSIZE` (it is not a total-filesystem quota — the `/tmp` / `/run` / `/var/tmp` / `$HOME` trees are sized tmpfs bounded by `--memory`, and total usage in the rw bind mounts is left to the host user's own quota); `nofile` caps the **number of open file descriptors** a runaway agent can hold (a classic fd-exhaustion DoS); `no-new-privileges` is always applied and is not a policy key. Example: `cpus: 0.5`  `memory: 2g`  `pids: 128`  `disk: 8g`  `nofile: 4096`.
 - **`timeout` (session cap).** Cuts a `ocs tui` / `ocs run` session that runs past *N* seconds. The cap wraps the container start, so it bounds the whole one-shot door; the agent-DNS gate, the NoNewPrivs guard, and the cgroup limits are unaffected. It does **not** apply to `ocs start`/`web` (long-running by design), `ocs terminal`, or `ocs test` (run its own timed suite). `0` (the default) disables the cap.
 - **`model` (model pin).** Pins the model for `ocs tui` and `ocs run`. It overrides the shared `OPENCODE_MODEL` constant in `bin/shared`, which remains the fallback when the key is unset. `ocs start`/`web` and `ocs test` are governed by the read-only `config/opencode.jsonc`, not this key. The named model must be reachable by the sandbox (on an `intranet-endpoints` entry, or allowed via `http-domain-whitelist`) and its provider must be enabled in `opencode.jsonc`.
 - Changing any of these keys requires `ocs rebuild` (to re-extract `policy.txt`); the change itself needs no image rebuild.
-- `ocs test` case 10 still verifies the DoS guard is active — and, when you set `cpus`/`memory`/`pids`/`disk`, it additionally asserts the running container's cgroup values (and `RLIMIT_FSIZE`) match the configured limits exactly.
+- `ocs test` case 10 still verifies the DoS guard is active — and, when you set `cpus`/`memory`/`pids`/`disk`/`nofile`, it additionally asserts the running container's cgroup values (and `RLIMIT_FSIZE` / `RLIMIT_NOFILE`) match the configured limits exactly.
 
 `ocs rebuild` reads this file to generate derived build artifacts — **a rebuild is required after changes**. The file is required; `ocs rebuild` fails if it is missing.
+
+### Extra hardening
+
+Four optional top-level keys add **defense-in-depth** on top of the per-project policy. They are all validated at `ocs rebuild`; three of the four are baked into the image (the entrypoint reads them from `/etc/<key>`); one (`seccomp`) is applied host-side at container start (`build_run_flags` reads it from `policy.txt`). None of them changes the *primary* defense (ro rootfs + capabilities drop + seccomp (Docker's default) + the ro bind overlays); they are additional layers. The `sensitive-paths:` list is not a scalar but a per-project extra set of workspace sub-paths to pin read-only.
+
+| Key | Meaning | Form | Default | Where it applies |
+|---|---|---|---|---|
+| `seccomp:` | opt-out of Docker's default seccomp profile | `on` \| `off` | `on` (Docker default enforced) | `build_run_flags` (host) — `off` adds `--security-opt seccomp=unconfined` |
+| `landlock:` | kernel-enforced write boundary (Landlock LSM) | `on` \| `off` | `off` | entrypoint (in-container) — runs `/opt/ocs/landlock.py` if `on` |
+| `egress-audit:` | squid access-log for forensics | `on` \| `off` | `off` (no noise on the proxy) | entrypoint (in-container) — squid runs from a `/run` tmpfs config copy with `access_log /run/squid-access.log` |
+| `sensitive-paths:` (list) | extra workspace sub-paths to pin **read-only** over the rw mount | relative paths (no leading `/`, no `..`) | empty (the built-in `.git/hooks`, `.git/config`, `.husky`, `.vscode`, `.github/workflows`, `.devcontainer` are always protected) | `build_run_flags` (host) + `bin/shared` default set |
+
+- **`seccomp` (opt-out).** Docker applies its built-in default allow-list seccomp profile to **every** container by default (it blocks ~44 classic escape/privesc syscalls: `prctl`, `ptrace`, `mount`, `unshare`, `bpf`, `kexec_load`, `setns`, `io_uring_setup`, `add_key`, etc.). We do **not** ship a custom profile — a custom one risks *allowing* something Docker's default denies. The key is `on`/`off`; `off` is an explicit opt-out for debugging (adds `--security-opt seccomp=unconfined`). `on` (default) does nothing extra (Docker already enforces its built-in). Test case **28** asserts the seccomp mode is 2 (filter attached).
+- **`landlock` (opt-in).** When `on`, the entrypoint runs `/opt/ocs/landlock.py` (a ctypes-based Landlock helper baked into all profiles) to install a kernel-side write boundary on the dev process tree: allow read+execute on all of `/`, allow write only on the explicitly rw-mounted dirs (`/workspace`, `/home/dev`, `/tmp`, `/run`, `/var/tmp`). If a capability leak grants write to a ro path, Landlock still denies it (the kernel checks the ruleset, not the mount permissions). Opt-in: requires a kernel ≥ 5.13 with Landlock support; on older kernels the helper SKIPS (exit 0, marker `/run/.landlock-skipped`) and the other layers (ro rootfs, caps drop, ro overlays, seccomp) still carry the security weight. Requires `ocs rebuild` (the helper is baked into the image). Test case **29** asserts the marker is present and in a known state.
+- **`egress-audit` (opt-in).** When `on`, the entrypoint copies the squid config to the `/run` tmpfs with the `access_log` redirected to `/run/squid-access.log squid` (bounded by the 64m `/run` tmpfs, so it cannot exhaust disk and dies with the container) and starts squid from that copy — the rootfs is read-only, so the baked config is never modified. You get a forensics trace of every URL the agent proxied. Off by default (no log noise on the proxy).
+- **`sensitive-paths` (list).** Extra workspace sub-paths to pin **read-only** over the rw workspace mount. These are mounted *after* the broad `-v workspace` (Docker mount precedence: deeper mount added later wins), so a `touch /workspace/<path>/x` inside the container fails `EROFS` even though the agent has `write: allow` on an rw `/workspace`. The built-in set (`.git/hooks`, `.git/config`, `.husky`, `.vscode`, `.github/workflows`, `.devcontainer`) is always protected; `sensitive-paths:` ADDS to it. Typical additions: `.github/` (the whole dir, if you want to block any GH action), `.husky/_/`, `.vscode/extensions/`, `.git/hooks.sample` (if you have one). Paths must be workspace-relative (no leading `/`, no `..`); `ocs rebuild` rejects anything else. Test case **24** asserts each existing protected path is a separate ro mount and that a write attempt fails.
+- Test cases **24** (auto-exec paths ro-pinned) and **25** (in-commit git hooks neutralized) are the H1 (auto-exec file planting) defence-in-depth.
+- The `core.hooksPath` neutralization (case **25**) is baked into the *base* image (`base.Dockerfile` does `RUN git config --system core.hooksPath /dev/null`) so every profile gets it; it only affects the in-container git, never the host's. `OCS_BASE_API` is bumped when this layer is added (a stale cached base is re-baked).
 
 ---
 

@@ -33,6 +33,14 @@ COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
 COPY host-ports.txt /etc/host-ports.txt
 COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
 COPY agent-dns /etc/agent-dns
+COPY landlock /etc/landlock
+COPY egress-audit /etc/egress-audit
+
+# ============================================================================
+# LANDLOCK HELPER (opt-in kernel write boundary, shared with minimal/test)
+# ============================================================================
+COPY landlock.py /opt/ocs/landlock.py
+RUN chmod 0644 /opt/ocs/landlock.py
 
 # ============================================================================
 # OPENCODE PASSWORD / ENTRYPOINT (per-project config variables)

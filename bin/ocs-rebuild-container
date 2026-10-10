@@ -69,6 +69,9 @@ cp "${SANDBOX_HOME}/docker/entrypoint.sh" "${OPENCODE_SANDBOX_DIR}/entrypoint.sh
 echo "Copying squid configuration ..."
 cp "${SANDBOX_HOME}/docker/squid.conf" "${OPENCODE_SANDBOX_DIR}/squid.conf"
 
+echo "Copying landlock helper ..."
+cp "${SANDBOX_HOME}/docker/landlock.py" "${OPENCODE_SANDBOX_DIR}/landlock.py"
+
 echo "Processing sandbox configuration ..."
 if [[ -f "${CONFIG_FILE}" ]]; then
   SQUID_WHITELIST="${OPENCODE_SANDBOX_DIR}/squid-whitelist.txt"
@@ -76,15 +79,17 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   INTRANET_ENDPOINTS="${OPENCODE_SANDBOX_DIR}/intranet-endpoints.txt"
   ENV_PASSTHROUGH="${OPENCODE_SANDBOX_DIR}/env-passthrough.txt"
   ENV_STATIC="${OPENCODE_SANDBOX_DIR}/env.txt"
-  VOLUME_MOUNTS="${OPENCODE_SANDBOX_DIR}/volume-mounts.txt"
-  READ_ONLY_MOUNTS="${OPENCODE_SANDBOX_DIR}/read-only-mounts.txt"
-  true > "${SQUID_WHITELIST}"
-  true > "${HOST_PORTS}"
-  true > "${INTRANET_ENDPOINTS}"
-  true > "${ENV_PASSTHROUGH}"
-  true > "${ENV_STATIC}"
-  true > "${VOLUME_MOUNTS}"
-  true > "${READ_ONLY_MOUNTS}"
+   VOLUME_MOUNTS="${OPENCODE_SANDBOX_DIR}/volume-mounts.txt"
+   READ_ONLY_MOUNTS="${OPENCODE_SANDBOX_DIR}/read-only-mounts.txt"
+   SENSITIVE_PATHS="${OPENCODE_SANDBOX_DIR}/sensitive-paths.txt"
+   true > "${SQUID_WHITELIST}"
+   true > "${HOST_PORTS}"
+   true > "${INTRANET_ENDPOINTS}"
+   true > "${ENV_PASSTHROUGH}"
+   true > "${ENV_STATIC}"
+   true > "${VOLUME_MOUNTS}"
+   true > "${READ_ONLY_MOUNTS}"
+   true > "${SENSITIVE_PATHS}"
 
    # ---------------------------------------------------------------------------
    # Scalar flags — top-level "key: value" entries (not sections).
@@ -97,12 +102,22 @@ if [[ -f "${CONFIG_FILE}" ]]; then
       # Per-project policy knobs (all optional; the defaults below are the
       # host-DoS guard values applied by build_run_flags when the artifact
       # is absent). See README "Per-project policy".
-      cfg_cpus=""
-      cfg_memory=""
-      cfg_pids=""
-      cfg_disk=""
-      cfg_timeout=""
-      cfg_model=""
+       cfg_cpus=""
+       cfg_memory=""
+       cfg_pids=""
+       cfg_disk=""
+       cfg_timeout=""
+       cfg_model=""
+       # Extra hardening knobs (all optional — see README "Extra hardening"):
+       #   seccomp:      on|off  (default on  — docker's default seccomp profile)
+       #   landlock:     on|off  (default off — opt-in kernel FS boundary)
+       #   egress-audit: on|off  (default off — squid access log)
+       #   nofile:       int     (default 8192 — RLIMIT_NOFILE fd cap)
+       #   sensitive-paths: list (add extra auto-exec dirs to read-only-protect)
+       cfg_seccomp="on"
+       cfg_landlock="off"
+       cfg_egress_audit="off"
+       cfg_nofile=""
 
   section=""
   while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -133,12 +148,16 @@ if [[ -f "${CONFIG_FILE}" ]]; then
                 memory)                   cfg_memory="${top_value}" ;;
                 pids)                     cfg_pids="${top_value}" ;;
                 disk)                     cfg_disk="${top_value}" ;;
-                timeout)                  cfg_timeout="${top_value}" ;;
-                model)                    cfg_model="${top_value}" ;;
-                # sandbox-name and workspace are handled by shared
-             esac
-       fi
-      continue
+                 timeout)                  cfg_timeout="${top_value}" ;;
+                 model)                    cfg_model="${top_value}" ;;
+                 seccomp)                  cfg_seccomp="${top_value}" ;;
+                 landlock)                 cfg_landlock="${top_value}" ;;
+                 egress-audit)             cfg_egress_audit="${top_value}" ;;
+                 nofile)                   cfg_nofile="${top_value}" ;;
+                 # sandbox-name and workspace are handled by shared
+              esac
+        fi
+       continue
     fi
 
     # List item: "  - value". Strip inline comments + trailing whitespace
@@ -154,6 +173,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
         http-domain-whitelist) echo "${value}" >> "${SQUID_WHITELIST}" ;;
         host-ports)            echo "${value}" >> "${HOST_PORTS}" ;;
         intranet-endpoints)    echo "${value}" >> "${INTRANET_ENDPOINTS}" ;;
+        sensitive-paths)       echo "${value}" >> "${SENSITIVE_PATHS}" ;;
       esac
       continue
     fi
@@ -270,6 +290,37 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     fi
   fi
 
+  # Extra hardening knobs (see README "Extra hardening"). Default values
+  # apply when a key is unset (see cfg_* declarations above).
+  if [[ "${cfg_seccomp}" != "on" && "${cfg_seccomp}" != "off" ]]; then
+    echo "ERROR: 'seccomp' must be 'on' or 'off' (default on); got '${cfg_seccomp}'." >&2
+    exit 1
+  fi
+  if [[ "${cfg_landlock}" != "on" && "${cfg_landlock}" != "off" ]]; then
+    echo "ERROR: 'landlock' must be 'on' or 'off' (default off); got '${cfg_landlock}'." >&2
+    exit 1
+  fi
+  if [[ "${cfg_egress_audit}" != "on" && "${cfg_egress_audit}" != "off" ]]; then
+    echo "ERROR: 'egress-audit' must be 'on' or 'off' (default off); got '${cfg_egress_audit}'." >&2
+    exit 1
+  fi
+  if [[ -n "${cfg_nofile}" ]]; then
+    if [[ ! "${cfg_nofile}" =~ ^[1-9][0-9]*$ ]] || (( cfg_nofile < 64 )) || (( cfg_nofile > 1048576 )); then
+      echo "ERROR: 'nofile' must be an integer 64-1048576 (default 8192); got '${cfg_nofile}'." >&2
+      exit 1
+    fi
+  fi
+  # sensitive-paths: extra dirs (relative to the workspace) to read-only protect.
+  # Validate the shape (relative path, no leading '/', no '..') so they bind
+  # cleanly under /workspace.
+  while IFS= read -r sp || [[ -n "${sp}" ]]; do
+    [[ -z "${sp}" ]] && continue
+    if [[ "${sp}" == /* || "${sp}" == ../* || "${sp}" == */../* || "${sp}" == */.. || "${sp}" =~ [[:space:]] ]]; then
+      echo "ERROR: 'sensitive-paths' entry '${sp}' is not a relative workspace path (no leading '/', no '..', no spaces)." >&2
+      exit 1
+    fi
+  done < "${SENSITIVE_PATHS}"
+
   POLICY_FILE="${OPENCODE_SANDBOX_DIR}/policy.txt"
   rm -f -- "${POLICY_FILE}"
   {
@@ -279,8 +330,30 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     printf 'disk=%s\n'      "${cfg_disk}"
     printf 'timeout=%s\n'   "${cfg_timeout}"
     printf 'model=%s\n'     "${cfg_model}"
+    printf 'seccomp=%s\n'   "${cfg_seccomp}"
+    printf 'landlock=%s\n'  "${cfg_landlock}"
+    printf 'egress-audit=%s\n' "${cfg_egress_audit}"
+    printf 'nofile=%s\n'    "${cfg_nofile}"
   } > "${POLICY_FILE}"
   chmod u=rw,go= "${POLICY_FILE}"
+
+  # landlock + egress-audit are read by the ENTRYPOINT (in-container), so they
+  # must be baked into the image like agent-dns (a host-side policy.txt is not
+  # visible to the container). agent-dns is the template for this pattern.
+  for _kf in landlock egress-audit; do
+    _kfile="${OPENCODE_SANDBOX_DIR}/${_kf}"
+    rm -f -- "${_kfile}"
+    if [[ "${_kf}" == "landlock" ]]; then
+      printf '%s\n' "${cfg_landlock}" > "${_kfile}"
+    else
+      printf '%s\n' "${cfg_egress_audit}" > "${_kfile}"
+    fi
+    # These are on/off knobs — not secrets. Dev needs to read them (the test
+    # suite runs as dev); root writes. go=r is safe.
+    chmod u=rw,go=r "${_kfile}"
+  done
+  # nofile + seccomp are read by build_run_flags (host-side) via read_policy —
+  # they live only in policy.txt, no image bake needed.
 
   # Validate intranet endpoints: strict "ipv4:port" form, octets 0-255,
   # port 1-65535. (The shape regex alone accepts up to three digits per
@@ -314,13 +387,15 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   echo "  Extracted $(wc -l < "${ENV_STATIC}") static env var(s) into env.txt"
   echo "  Extracted $(wc -l < "${VOLUME_MOUNTS}") volume mount(s) into volume-mounts.txt"
   echo "  Extracted $(wc -l < "${READ_ONLY_MOUNTS}") read-only mount(s) into read-only-mounts.txt"
+  echo "  Extracted $(wc -l < "${SENSITIVE_PATHS}") extra sensitive path(s) into sensitive-paths.txt"
     echo "  OpenCode HTTP port: ${PORT}"
     echo "  Agent DNS (dev uid): ${cfg_agent_dns} ($( [[ ${cfg_agent_dns} == deny ]] && echo 'DNS tunnel blocked' || echo 'DNS tunnel OPEN by config' ))"
     echo "  Sandbox network range: ${cfg_sandbox_network_cidr} (each sandbox gets its own /24)"
   echo "  Workspace (single rw dir -> /workspace): ${SANDBOX_WORKSPACE_DIR:-${ROOT_DIR}/workspace}"
   # Policy summary — show the value, or the default (so the user sees what
   # will actually apply when the key is unset in opencode-sandbox-config.yaml).
-  echo "  Policy: cpus=${cfg_cpus:-2.0}, memory=${cfg_memory:-4g}, pids=${cfg_pids:-256}, disk=${cfg_disk:-8g}, timeout=${cfg_timeout:-0}s, model=${cfg_model:-shared}"
+   echo "  Policy: cpus=${cfg_cpus:-2.0}, memory=${cfg_memory:-4g}, pids=${cfg_pids:-256}, disk=${cfg_disk:-8g}, timeout=${cfg_timeout:-0}s, model=${cfg_model:-shared}"
+   echo "  Hardening: seccomp=${cfg_seccomp}, landlock=${cfg_landlock}, egress-audit=${cfg_egress_audit}, nofile=${cfg_nofile:-8192}, sensitive-paths=$(wc -l < "${SENSITIVE_PATHS}") extra"
 else
   echo "  Missing required config file: ${CONFIG_FILE}" >&2
   echo "  Create opencode-sandbox-config.yaml (use ocs-init template) and rebuild." >&2
@@ -400,7 +475,7 @@ fi
 # sandbox ships (passed to base.Dockerfile as --build-arg). Bumping it (and
 # OCS_BASE_API, since base.Dockerfile's layer set effectively changes) forces
 # both level base images to be rebuilt on the next ocs rebuild.
-OCS_BASE_API="3"
+OCS_BASE_API="4"
 OPENCODE_BUILD_VERSION="1.18.32"
 
 ensure_base_image() {

@@ -40,6 +40,7 @@ dockerfile: full
 # cpus:       2.0         # docker --cpus. Number >= 0.1.
 # pids:      256          # docker --pids-limit. Positive integer.
 # disk:       8g          # max size of a single file (RLIMIT_FSIZE). Form: Nk | Nm | Ng, N >= 1.
+# nofile:   8192          # max open file descriptors (RLIMIT_NOFILE). Form: integer 64-1048576.
 # timeout:     0          # wall-clock seconds for 'ocs tui' / 'ocs run'. 0 = no limit.
 #                         # The agent-DNS gate, NoNewPrivs, and the cgroup
 #                         # memory/cpus/pids limits are NOT affected by timeout.
@@ -49,6 +50,21 @@ dockerfile: full
 #                         # read-only opencode.jsonc, not by this key.
 #                         # Requires that the same model is reachable on the
 #                         # intranet-endpoints (or allowed via the proxy).
+
+# --- Extra hardening (all optional; the defaults below are the ones applied
+# when a key is unset. See README "Extra hardening" for details.) ---
+# seccomp:  on           # on (default) | off — Docker's default seccomp profile (allowed by default;
+#                        # 'off' adds --security-opt seccomp=unconfined, an explicit opt-out for
+#                        # debugging only. Never ship a custom JSON profile.)
+# landlock: off           # on | off (default) — kernel-enforced write boundary via /opt/ocs/landlock.py.
+#                         # Requires kernel >= 5.13 with Landlock; on older kernels the helper skips.
+#                         # Requires a rebuild (baked into the image).
+# egress-audit: off      # on | off (default) — squid logs every URL to /run/squid-access.log (the
+#                         # 64m /run tmpfs, bounded by --memory). Off by default (no log noise).
+# sensitive-paths:       # extra workspace sub-paths to pin READ-ONLY over the rw /workspace mount.
+#   # - .github/         #   Relative, no leading '/', no '..'. The built-in set
+#   # - .husky/_/        #   (.git/hooks, .git/config, .husky, .vscode, .github/workflows, .devcontainer)
+#                        #   is ALWAYS protected — this list ADDS to it. Requires a rebuild.
 
 # Outbound HTTP/HTTPS domains allowed via the proxy (Squid).
 # A leading dot matches the domain and all its subdomains.

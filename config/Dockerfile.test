@@ -60,6 +60,13 @@ COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
 COPY host-ports.txt /etc/host-ports.txt
 COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
 COPY agent-dns /etc/agent-dns
+COPY landlock /etc/landlock
+COPY egress-audit /etc/egress-audit
+
+# --- landlock helper (opt-in; same neutral path as minimal/full so cases can
+#     run in any profile) ------------------------------------------------------
+COPY landlock.py /opt/ocs/landlock.py
+RUN chmod 0644 /opt/ocs/landlock.py
 
 # --- test-harness egress targets (baked from the build args above) -----------
 # Appended to the allow-lists the entrypoint reads at start, so this TEST image

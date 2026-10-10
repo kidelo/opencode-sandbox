@@ -14,6 +14,27 @@ set -euo pipefail
 # proxy-owned dir: docker/squid.conf uses `pid_filename none`.
 # ---------------------------------------------------------------------------
 
+# --- Egress audit (opt-in, `egress-audit: on`) -------------------------------
+# When active, squid runs with a config copied into the /run tmpfs with the
+# access_log redirected to /run/squid-access.log (bounded by the 64m /run
+# tmpfs, so the log cannot exhaust disk and disappears with the container).
+# The rootfs is read-only, so we cannot sed the baked config in place; the /run
+# copy is the only viable path. The copy is world-readable 0644: any user may
+# read the log, but it only contains URLs the proxy forwarded, which are
+# already on the whitelisted domains the agent was allowed to hit.
+# ---------------------------------------------------------------------------
+_SQUID_CONF=/etc/squid/squid.conf
+_EGRESS_AUDIT="$(tr -d '[:space:]' < /etc/egress-audit 2>/dev/null || echo off)"
+if [[ "${_EGRESS_AUDIT}" == "on" ]]; then
+  _SQUID_CONF=/run/squid.conf
+  cp /etc/squid/squid.conf "${_SQUID_CONF}"
+  chmod 0644 "${_SQUID_CONF}"
+  sed -i 's|^access_log none|access_log /run/squid-access.log squid|' "${_SQUID_CONF}"
+  echo ">> egress-audit ON (squid -> /run/squid-access.log, bounded by /run tmpfs)"
+else
+  echo ">> egress-audit OFF (default)"
+fi
+
 # ---------------------------------------------------------------------------
 # Proxy: start squid ONLY when outbound domains are whitelisted. With an empty
 # http-domain-whitelist there is no external server the agent needs to reach,
@@ -25,7 +46,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 if [[ -s /etc/squid/squid-whitelist.txt ]]; then
   echo ">> starting squid proxy (squid startup messages below are expected)"
-  squid
+  squid -c "${_SQUID_CONF}"
   timeout 30 bash -c 'until curl --silent --output /dev/null --max-time 1 http://127.0.0.1:3128; do sleep 0.2; done'
   echo ">> squid is ready"
 else
@@ -96,6 +117,27 @@ else
   echo ">> agent-DNS tunnel OPEN (agent-dns: allow — explicit config choice)"
 fi
 
+# ---------------------------------------------------------------------------
+# QUIC / DoT / DoH hardening (defence-in-depth, applied UNCONDITIONALLY).
+# The dev uid has no legitimate QUIC (HTTP/3 over UDP:443), DNS-over-TLS
+# (UDP/TCP:853) or DNS-over-HTTPS (TCP:8853) need. These are the classic
+# "slips past a TCP:443-only allowlist" exfil channels — an explicit per-UID
+# DROP here makes the intent visible in `iptables -S` and survives even if a
+# future config accidentally adds a broad ACCEPT. Squid's proxy uid is the
+# only dev-facing egress and it uses plain TCP:443, so it is unaffected.
+# Independent of the agent-dns gate above (works in both modes).
+# ---------------------------------------------------------------------------
+_DEV_UID="$(id -u dev)"
+for _dport in 443 853; do
+  iptables   -A OUTPUT -m owner --uid-owner "${_DEV_UID}" -p udp --dport "${_dport}" -j DROP
+  ip6tables   -A OUTPUT -m owner --uid-owner "${_DEV_UID}" -p udp --dport "${_dport}" -j DROP 2>/dev/null || true
+done
+for _dport in 853 8853; do
+  iptables   -A OUTPUT -m owner --uid-owner "${_DEV_UID}" -p tcp --dport "${_dport}" -j DROP
+  ip6tables   -A OUTPUT -m owner --uid-owner "${_DEV_UID}" -p tcp --dport "${_dport}" -j DROP 2>/dev/null || true
+done
+echo ">> QUIC/DoT/DoH BLOCKED for dev uid ${_DEV_UID} (udp:443,udp:853,tcp:853,tcp:8853 — no QUIC/DNS-over-TLS/DNS-over-HTTPS exfil)"
+
 # Allow loopback (needed for proxy connections to squid on 127.0.0.1:3128)
 iptables  -A OUTPUT -o lo -j ACCEPT
 ip6tables -A OUTPUT -o lo -j ACCEPT
@@ -152,6 +194,53 @@ if [[ -s /etc/squid/squid-whitelist.txt ]]; then
   done
   export no_proxy="${_no_proxy_hosts}"
   export NO_PROXY="${_no_proxy_hosts}"
+fi
+
+# ---------------------------------------------------------------------------
+# Landlock (opt-in, `landlock: on`): kernel-enforced write boundary on top of
+# the other layers (caps drop, ro rootfs, ro mount overlays, seccomp).
+# Defence-in-depth: if a capability leak grants write to a ro path, Landlock
+# still denies it. Opt-in; skipped silently on kernels without Landlock.
+# Must run BEFORE `gosu dev` — it only restricts the current process tree.
+# A machine-readable marker (/run/.landlock-<state>) is left for the test
+# suite; state is one of {applied, skipped, off, failed}.
+# ---------------------------------------------------------------------------
+_LANDLOCK="$(tr -d '[:space:]' < /etc/landlock 2>/dev/null || echo off)"
+if [[ "${_LANDLOCK}" == "on" ]]; then
+  _LL_OUT="$(LL_RW_PATHS="/workspace:/home/dev:/tmp:/run:/var/tmp" python3 /opt/ocs/landlock.py 2>&1 || true)"
+  # surface the helper's log
+  printf '%s\n' "${_LL_OUT}"
+  _LL_STATE="$(printf '%s' "${_LL_OUT}" | grep -oE 'LL_STATE=[a-z]+' | head -n1 | cut -d= -f2 || true)"
+  case "${_LL_STATE}" in
+    applied)  : > /run/.landlock-applied;  echo ">> landlock marker: /run/.landlock-applied" ;;
+    skipped)  : > /run/.landlock-skipped; echo ">> landlock marker: /run/.landlock-skipped (kernel lacks Landlock)" ;;
+    *)        : > /run/.landlock-failed;  echo "!! landlock marker: /run/.landlock-failed" ;;
+  esac
+else
+  : > /run/.landlock-off 2>/dev/null || true
+  echo ">> landlock OFF (default); marker: /run/.landlock-off"
+fi
+
+# ---------------------------------------------------------------------------
+# Git hook neutralization (H1) — entrypoint half. The other half is the
+# `RUN git config --system core.hooksPath /dev/null` baked into each profile
+# (Dockerfile.minimal/.full/.test) — the image's /etc/gitconfig already sets
+# the in-container hook path to a null sink, so any in-container `git commit`
+# by the agent is a no-op for hook firing. What remains for the entrypoint:
+# (a) a belt-and-braces re-assert in case the bake is removed (best-effort,
+#     silently skipped on a read-only /etc), and (b) a note that the HOST-
+#     SIDE hooks are unaffected (different scope, different fs).
+# ---------------------------------------------------------------------------
+if command -v git >/dev/null 2>&1; then
+  # Best-effort (ro rootfs may make this a no-op — the profile bake is the
+  # real enforcement).
+  if git config --system core.hooksPath >/dev/null 2>&1; then
+    echo ">> git hooks neutralized (system core.hooksPath=$(git config --system --get core.hooksPath))"
+  else
+    echo ">> git hooks neutralization (baked); host-side hooks unaffected either way"
+  fi
+else
+  echo ">> git hooks neutralization SKIPPED (no git binary in this profile)"
 fi
 
 # ---------------------------------------------------------------------------
