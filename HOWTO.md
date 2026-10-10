@@ -231,13 +231,28 @@ agent-dns: deny                 # deny (default) = no DNS exfil channel; allow =
 
 env-passthrough:                # host env → container (values read at start time)
   GH_TOKEN: GH_TOKEN
+
+volume-mounts:                  # extra host dirs mounted read-WRITE
+  # /cache: "$HOME/.cache/my-project"
+
+read-only-mounts:               # extra host dirs mounted READ-ONLY (agent can read, not write)
+  # /data: "$HOME/datasets"
+
+# Per-project policy (optional; defaults shown). See README → Per-project policy.
+# cpus: 2.0
+# memory: 4g
+# pids: 256
+# disk: 8g                      # max size of a single file (RLIMIT_FSIZE)
+# timeout: 0                    # wall-clock cap for `ocs tui` / `ocs run` (0 = none)
+# model: ollama/qwen3.8:27b     # -m pin for `ocs tui` / `ocs run`
 ```
 
 - **`http-domain-whitelist`** — domains the Squid proxy will forward. **Empty by default — nothing is allowed until you add a domain.** A leading dot covers subdomains.
 - **`host-ports`** — for databases/servers on the host machine. **Disabled by default (empty)**; add ports only if needed. Use the hostname `docker.host` (not `localhost`) inside the container.
 - **`intranet-endpoints`** — for on-prem services on other machines. This must include your model endpoint or the agent cannot reach it (see `ocs test` SKIP hint). Endpoints are `ip:port` **by design** — the agent's own DNS is denied by default (`agent-dns: deny`), so nothing inside the container may rely on hostname resolution for endpoints.
 - **`agent-dns`** — `deny` (default) or `allow`. `deny` is the secure path (no DNS exfil/C2 channel); `allow` re-opens the resolver for the agent — only turn this on when an endpoint must be a hostname (e.g. model `baseURL`).
-- **`env-passthrough` / `env`** — credentials (via passthrough, never a file) and non-secret context (via `env`).
+- **`env-passthrough` / `env`** — credentials (via passthrough; passed at start time through a per-run `0600` env file, so they never appear on the `docker run` command line) and non-secret context (via `env`).
+- **`volume-mounts` / `read-only-mounts`** — extra host directories mounted into the container (`CONTAINER_DIR: HOST_DIR`), read-write or read-only respectively. The workspace stays the only writable output dir; use `read-only-mounts` for input/reference data.
 - **`sandbox-network-cidr`** — the private range all your sandboxes draw from; each sandbox gets its own `/24` inside it, L2-separated from the others.
 
 `config/opencode.jsonc` sets the model, provider (`baseURL` of your Ollama server) and OpenCode permissions (`webfetch` / `websearch` denied by default). Change it if you point at a different model.
@@ -288,7 +303,9 @@ If it contains secrets, add it to `.gitignore`.
 - **Agent case SKIPs in `ocs test`** — the model endpoint (your Ollama `ip:port`) is not reachable from the container. Add it to `intranet-endpoints` in `config/opencode-sandbox-config.yaml` and rebuild.
 - **The agent cannot resolve a hostname (DNS "no answer"/timeout)** — expected with the default `agent-dns: deny` (the DNS exfil/C2 channel is closed). Two options: address the endpoint by IP (`intranet-endpoints: - ip:port`, and give the model `baseURL` an IP), or set `agent-dns: allow` in the config and rebuild if you accept the DNS exfil risk.
 - **A test case FAILed and the image vanished** — by design. `ocs rebuild` brings it back.
-- **Container runs out of memory / is killed (OOM) or feels CPU-limited** — every sandbox runs with host-DoS guards by default: `--memory=4g --memory-swap=4g --cpus=2.0 --pids-limit=256 --security-opt=no-new-privileges:true` (see README → Network isolation). Raise the values in `bin/shared` (`build_run_flags`) and start again — no rebuild needed.
+- **Container runs out of memory / is killed (OOM) or feels CPU-limited** — every sandbox runs with host-DoS guards by default: `--memory=4g --memory-swap=4g --cpus=2.0 --pids-limit=256 --ulimit=fsize=8g --security-opt=no-new-privileges:true`, plus a **read-only rootfs with sized tmpfs** for `/tmp` / `/run` / `/var/tmp` / `$HOME` and **IPv6 disabled** in the namespace (see README → Network isolation). Override per project with the `cpus:` / `memory:` / `pids:` / `disk:` policy keys in `config/opencode-sandbox-config.yaml`, run `ocs rebuild`, and start again — no image rebuild needed.
+- **A write fails with "File too large" / the agent cannot create a big file** — the `disk:` policy key (default `8g`) caps the size of a single file (`RLIMIT_FSIZE`). Raise it in `config/opencode-sandbox-config.yaml` and `ocs rebuild` if the project legitimately needs larger files. Note this caps one file, not total disk usage.
+- **A write fails with "Read-only file system" (EROFS)** — by design. The container root filesystem is read-only: only `/workspace`, the opencode state dir (`~/.local/share/opencode`), and any `volume-mounts` you configured are writable. `/tmp`, `/run`, `/var/tmp`, `~/.cache`, `~/.config` and `~/.local/state` are sized **tmpfs** (ephemeral, bounded by the memory limit). Write outputs under `/workspace` (or add a `volume-mounts` entry) instead of system paths.
 - **`ocs test` case 11 says "peer container not started"** — the runner could not bring up the second isolation-check container (e.g. image missing or runtime hiccup). Re-run `ocs test`; the deterministic cases are unaffected.
 - **Container won't start after a manual docker mess** — `ocs kill` resets all sandbox containers/images/networks (and only those).
 - **Where is my session history?** — `<project>/.sandbox/state/opencode/`, mounted at `/home/dev/.local/share/opencode`. `ocs kill` does **not** delete it (only `ocs kill --state` does).

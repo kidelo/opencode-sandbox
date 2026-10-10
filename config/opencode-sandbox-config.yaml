@@ -34,6 +34,22 @@ sandbox-network-cidr: 10.77.0.0/16
 # Defaults to `minimal` when unset. Requires a rebuild.
 dockerfile: full
 
+# --- Per-project policy (all optional; the host-DoS guard values below are the
+# defaults applied when a key is unset, so you can leave them commented out) ---
+# memory:    4g          # docker --memory + --memory-swap. Form: Nk | Nm | Ng.
+# cpus:       2.0         # docker --cpus. Number >= 0.1.
+# pids:      256          # docker --pids-limit. Positive integer.
+# disk:       8g          # max size of a single file (RLIMIT_FSIZE). Form: Nk | Nm | Ng, N >= 1.
+# timeout:     0          # wall-clock seconds for 'ocs tui' / 'ocs run'. 0 = no limit.
+#                         # The agent-DNS gate, NoNewPrivs, and the cgroup
+#                         # memory/cpus/pids limits are NOT affected by timeout.
+# model: ollama/qwen3.8:27b   # -m pin for 'ocs tui' and 'ocs run'. When unset,
+#                         # the shared default in bin/shared (OPENCODE_MODEL) applies.
+#                         # 'ocs test' and 'ocs start' are governed by the
+#                         # read-only opencode.jsonc, not by this key.
+#                         # Requires that the same model is reachable on the
+#                         # intranet-endpoints (or allowed via the proxy).
+
 # Outbound HTTP/HTTPS domains allowed via the proxy (Squid).
 # A leading dot matches the domain and all its subdomains.
 # Starts EMPTY — no domains are allowed by default; add only what the project
@@ -71,6 +87,14 @@ env-passthrough:
   # DB_USER: DB_USER
   # DB_PASSWORD: DB_PASSWORD
 
+# Extra host directories mounted read-write into the container, as
+# CONTAINER_DIR: HOST_DIR. (The workspace itself is already rw at /workspace.)
 volume-mounts:
  # /test: "$HOME/test"
+
+# Extra host directories mounted READ-ONLY into the container, same format.
+# Use this to expose input/reference trees the agent may read but must not
+# modify. The workspace stays the single read-write output dir.
+read-only-mounts:
+ # /data: "$HOME/datasets"
 

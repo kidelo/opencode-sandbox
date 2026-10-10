@@ -70,6 +70,10 @@ commands:
 
 project is required for most commands; without a name the sandbox project of
 the current directory is used.
+
+per-project policy (opencode-sandbox-config.yaml, see README "Per-project policy"):
+  cpus: <num>  memory: <Nk|Nm|Ng>  pids: <int>  disk: <Nk|Nm|Ng>  timeout: <sec>  model: <provider/name>
+  Defaults when unset: cpus=2.0, memory=4g, pids=256, disk=8g, timeout=0 (none), model=shared.
 EOF
 }
 
@@ -219,13 +223,19 @@ case "${cmd}" in
       cd "${SANDBOXES_BASE}/${logs_first}"
       exec "${BIN_DIR}/ocs-logs" "$@"
     fi
+    # First arg was a bare word that is NOT a known project — fail loudly
+    # instead of silently showing the CURRENT directory's log (which is very
+    # confusing: a typo'd name would tail an unrelated project).
+    if [[ -n "${logs_first}" && "${logs_first}" != -* ]]; then
+      echo "ocs: project '${logs_first}' not found in ${SANDBOXES_BASE}." >&2
+      list_projects >&2 || true
+      exit 1
+    fi
     # First arg was a flag (or missing) — resolve the project from CWD.
     logs_dir="$(find_sandbox_root 2>/dev/null || true)"
     if [[ -n "${logs_dir}" && -d "${logs_dir}" ]]; then
       cd "${logs_dir}"
-      # Pass the first arg back only if it is a flag (starts with -); a bare
-      # word outside a project is not a valid container-log flag, so drop it.
-      if [[ -n "${logs_first}" && "${logs_first}" == -* ]]; then
+      if [[ -n "${logs_first}" ]]; then
         exec "${BIN_DIR}/ocs-logs" "${logs_first}" "$@"
       fi
       exec "${BIN_DIR}/ocs-logs" "$@"

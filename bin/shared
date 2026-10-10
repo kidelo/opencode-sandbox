@@ -449,6 +449,17 @@ expand_env_path() {
   printf '%s' "${out}"
 }
 
+# strip_quotes <s>
+# Remove ONE pair of matching surrounding single or double quotes (the
+# documented `"$HOME/data"` form). Docker's -v takes a literal path, so a
+# quoted YAML value must be unquoted before it is used as a bind source.
+strip_quotes() {
+  local s="${1}"
+  if [[ "${s}" == \"*\" ]]; then s="${s#\"}"; s="${s%\"}"; fi
+  if [[ "${s}" == \'*\' ]]; then s="${s#\'}"; s="${s%\'}"; fi
+  printf '%s' "${s}"
+}
+
 # CAP_FLAGS — the container capability set.
 #   NET_ADMIN : the iptables firewall (always runs).
 #   SETUID,SETGID : gosu's root->dev privilege drop (setresuid/setresgid) and
@@ -461,10 +472,46 @@ compute_cap_flags() {
   CAP_FLAGS=(--cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID)
 }
 
+# read_policy <key>
+# Read a key from the per-project policy artifact ${OPENCODE_SANDBOX_DIR}/policy.txt
+# (written by ocs-rebuild-container from opencode-sandbox-config.yaml).
+# Echoes the value on stdout; returns 1 (and prints nothing) when the key is
+# absent or the file does not exist. Callers MUST provide a sensible fallback
+# default, because the artifact is only present after a successful 'ocs rebuild'.
+read_policy() {
+  local key="${1:?read_policy: key is required}"
+  local file="${OPENCODE_SANDBOX_DIR}/policy.txt"
+  [[ -f "${file}" ]] || return 1
+  local line value
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    [[ -z "${line}" || "${line}" == "#"* ]] && continue
+    [[ "${line%%=*}" != "${key}" ]] && continue
+    value="${line#*=}"
+    [[ -z "${value}" ]] && continue   # empty value -> treat as not set
+    printf '%s\n' "${value}"
+    return 0
+  done < "${file}"
+  return 1
+}
+
+# to_bytes <Nk|Nm|Ng|N>
+# Convert a human size (the shape validated by ocs-rebuild-container for the
+# `disk:` policy key) to a plain byte count, using pure bash integer math.
+to_bytes() {
+  local v="${1}"
+  case "${v}" in
+    *k) echo $(( ${v%k} * 1024 )) ;;
+    *m) echo $(( ${v%m} * 1048576 )) ;;
+    *g) echo $(( ${v%g} * 1073741824 )) ;;
+    *)  echo "${v}" ;;
+  esac
+}
+
 # Build the docker-run flag array for the sandbox: caps, resource limits,
 # workspace mount (the single user rw dir), opencode state (ro? no — rw
-# persistent), the read-only opencode.jsonc, env-passthrough, static env,
-# extra volume mounts, add-host, and the dedicated network.
+# persistent), the read-only opencode.jsonc, env-passthrough (via a 0600
+# --env-file), static env, extra rw + read-only volume mounts, add-host, and
+# the dedicated network.
 # Requires: CONTAINER_NAME, SANDBOX_ID, ROOT_DIR, SANDBOX_WORKSPACE_DIR,
 #           OPENCODE_STATE_DIR, OPENCODE_SANDBOX_DIR.
 # Result: populates RUN_FLAGS (array), RUN_LOG (array of human lines), and
@@ -478,14 +525,70 @@ build_run_flags() {
   # DoS from a misbehaving / prompt-injected agent): unbounded RAM, CPU or
   # process counts would let one sandbox take down the host; NoNewPrivs
   # blocks setuid escalation even though the bounding set is already
-  # minimized. Values are fixed sensible defaults — raise them here if a
-  # project needs more, then `ocs rebuild` is NOT required (run flags are
-  # assembled at start time, only the image is cached).
-  RUN_FLAGS+=("--memory=4g" "--memory-swap=4g")
-  RUN_FLAGS+=("--cpus=2.0")
-  RUN_FLAGS+=("--pids-limit=256")
+  # minimized. The numeric values are per-project policy knobs
+  # (memory:/cpus:/pids:/disk: in opencode-sandbox-config.yaml, baked into
+  # policy.txt by ocs-rebuild-container); when the artifact is absent or
+  # a key is missing, the fixed sensible defaults apply so a pre-rebuild
+  # run still gets the DoS guard. `disk` caps a single file's size via
+  # RLIMIT_FSIZE (--ulimit fsize), so a runaway agent cannot fill the host
+  # filesystem with one giant file.
+  local POLICY_MEMORY POLICY_CPUS POLICY_PIDS POLICY_DISK
+  POLICY_MEMORY="$(read_policy memory 2>/dev/null || true)"
+  POLICY_CPUS="$(read_policy cpus 2>/dev/null || true)"
+  POLICY_PIDS="$(read_policy pids 2>/dev/null || true)"
+  POLICY_DISK="$(read_policy disk 2>/dev/null || true)"
+  [[ -n "${POLICY_MEMORY}" ]] || POLICY_MEMORY="4g"
+  [[ -n "${POLICY_CPUS}" ]] || POLICY_CPUS="2.0"
+  [[ -n "${POLICY_PIDS}" ]] || POLICY_PIDS="256"
+  [[ -n "${POLICY_DISK}" ]] || POLICY_DISK="8g"
+  RUN_FLAGS+=("--memory=${POLICY_MEMORY}" "--memory-swap=${POLICY_MEMORY}")
+  RUN_FLAGS+=("--cpus=${POLICY_CPUS}")
+  RUN_FLAGS+=("--pids-limit=${POLICY_PIDS}")
+  RUN_FLAGS+=("--ulimit=fsize=$(to_bytes "${POLICY_DISK}")")
   RUN_FLAGS+=("--security-opt=no-new-privileges:true")
-  RUN_LOG+=("    limits   (doS guard): memory=4g, cpus=2.0, pids=256, no-new-privileges=true")
+  RUN_LOG+=("    limits   (doS guard): memory=${POLICY_MEMORY}, cpus=${POLICY_CPUS}, pids=${POLICY_PIDS}, fsize=${POLICY_DISK}, no-new-privileges=true")
+
+  # In-container filesystem hardening: run every door on a READ-ONLY overlay
+  # rootfs plus a sized tmpfs map. Consequences:
+  #  - /tmp, /run, /var/tmp and $HOME become memory-backed (the existing
+  #    --memory cap bounds them) instead of host-disk-backed overlay, closing
+  #    the "many small files fill /var/lib/docker" DoS that RLIMIT_FSIZE alone
+  #    cannot (it only caps a single file).
+  #  - The image layer set is immutable at runtime: a (theoretically) escaped
+  #    agent cannot trojan /usr/local/bin/opencode or the squid/iptables config
+  #    mid-run — a docker diff afterwards shows nothing outside the explicit rw
+  #    mounts.
+  # All real writes keep flowing through the explicit rw bind mounts (workspace,
+  # opencode state, volume-mounts, and the test harness /mnt/ocs-fwd).
+  #
+  # Ownership without CAP_CHOWN: a tmpfs comes up root-owned, and the bounding
+  # set is deliberately {NET_ADMIN,SETUID,SETGID} (no CAP_CHOWN) and Docker's
+  # --tmpfs has no uid/gid option, so the entrypoint must NOT chown tmpfs dirs.
+  # Instead the dirs the unprivileged users write are mounted mode=1777 (sticky
+  # world-writable): dev creates its own ~/.cache|.config; a nested 1777 tmpfs
+  # at /home/dev/.local lets it create ~/.local/state too (opencode's xdgState),
+  # even though the state BIND sits at ~/.local/share/opencode, so docker makes
+  # .local/share root-owned — opencode only ever writes *inside* the bind.
+  # squid needs no proxy-owned dir at all: docker/squid.conf uses
+  # `pid_filename none` + `coredump_dir /tmp` + memory-only cache / null logs.
+  # `exec` is explicit because Docker forces `nosuid,nodev,noexec` on tmpfs by
+  # default; temp/build intermediates and opencode's own cache bin must stay
+  # runnable. /run keeps noexec (nothing runs from it).
+  RUN_FLAGS+=("--read-only")
+  RUN_FLAGS+=(--tmpfs "/tmp:rw,exec,size=512m,mode=1777")
+  RUN_FLAGS+=(--tmpfs "/run:rw,nosuid,noexec,size=64m,mode=1777")
+  RUN_FLAGS+=(--tmpfs "/var/tmp:rw,exec,size=128m,mode=1777")
+  RUN_FLAGS+=(--tmpfs "/home/dev:rw,exec,size=256m,mode=1777")
+  RUN_FLAGS+=(--tmpfs "/home/dev/.local:rw,exec,size=128m,mode=1777")
+
+  # IPv6 is disabled inside the namespace: the sandbox networks are v4-only
+  # anyway, and turning the whole stack off removes an entire egress/attack
+  # layer from the surface we reason about. The entrypoint's ip6tables rules
+  # stay in place as free defence-in-depth. `net.*` sysctls are namespace
+  # scoped, so dockerd applies them without --privileged.
+  RUN_FLAGS+=(--sysctl "net.ipv6.conf.all.disable_ipv6=1")
+  RUN_FLAGS+=(--sysctl "net.ipv6.conf.default.disable_ipv6=1")
+  RUN_LOG+=("    rootfs   (ro): read-only overlay + sized tmpfs (/tmp /run /var/tmp /home/dev + /home/dev/.local, mode=1777); IPv6 disabled in-namespace")
 
   # The single user read-write dir, at a fixed in-container path.
   RUN_FLAGS+=(-v "${SANDBOX_WORKSPACE_DIR}:/workspace")
@@ -527,9 +630,19 @@ build_run_flags() {
     RUN_LOG+=("    egress: squid proxy DISABLED (no http-domain-whitelist) — firewall only")
   fi
 
-  # env-passthrough
+  # env-passthrough — values are written to a 0600 --env-file INSTEAD of
+  # being inlined as `-e NAME=value`, so a secret passed this way never shows
+  # up in the host `ps`/`docker inspect` output. The file lives in the
+  # per-project runtime tree (${OPENCODE_SANDBOX_DIR}, gitignored) and is
+  # truncated/removed on every run so it never goes stale. Docker parses the
+  # file WITHOUT a shell (no expansion, no comment stripping in values), which
+  # is exactly what we want for opaque credentials.
   local ENV_PASSTHROUGH_FILE="${OPENCODE_SANDBOX_DIR}/env-passthrough.txt"
+  local ENV_RUNTIME_FILE="${OPENCODE_SANDBOX_DIR}/env-passthrough.runtime"
+  local env_runtime_count=0
   if [[ -f "${ENV_PASSTHROUGH_FILE}" ]]; then
+    : > "${ENV_RUNTIME_FILE}"
+    chmod u=rw,go= "${ENV_RUNTIME_FILE}"
     while IFS= read -r entry || [[ -n "${entry}" ]]; do
       [[ -z "${entry}" ]] && continue
       local container_name="${entry%%=*}"
@@ -542,12 +655,19 @@ build_run_flags() {
         continue
       fi
       if [[ -n "${!host_name+set}" ]]; then
-        RUN_FLAGS+=(-e "${container_name}=${!host_name}")
+        printf '%s=%s\n' "${container_name}" "${!host_name}" >> "${ENV_RUNTIME_FILE}"
+        env_runtime_count=$(( env_runtime_count + 1 ))
         RUN_LOG+=("    env: ${container_name} (from host \$${host_name})")
       else
         RUN_LOG+=("    env: ${container_name} (skipped — \$${host_name} not set on host)")
       fi
     done < "${ENV_PASSTHROUGH_FILE}"
+  fi
+  if (( env_runtime_count > 0 )); then
+    RUN_FLAGS+=(--env-file "${ENV_RUNTIME_FILE}")
+  else
+    # No forwarded vars — make sure a stale file from a previous run is gone.
+    rm -f -- "${ENV_RUNTIME_FILE}"
   fi
 
   # static env
@@ -571,10 +691,26 @@ build_run_flags() {
       # expand_env_path is SAFE for untrusted config values (only $VAR refs are
       # resolved; nothing -- no command sub, no arithmetic -- is ever executed,
       # unlike the previous `eval`, which would run code from the config file).
-      host_dir="$(expand_env_path "${host_dir}")"
+      host_dir="$(strip_quotes "$(expand_env_path "${host_dir}")")"
       RUN_FLAGS+=(-v "${host_dir}:${container_dir}")
       RUN_LOG+=("    mount: ${host_dir} -> ${container_dir}")
     done < "${VOLUME_MOUNTS_FILE}"
+  fi
+
+  # read-only extra mounts — same format as volume-mounts, attached `:ro`.
+  # The workspace stays the single rw dir (the agent's output target); use
+  # this section to expose input/reference trees the agent may read but must
+  # not modify. Host paths expand $VAR / ${VAR} exactly like volume-mounts.
+  local READ_ONLY_MOUNTS_FILE="${OPENCODE_SANDBOX_DIR}/read-only-mounts.txt"
+  if [[ -f "${READ_ONLY_MOUNTS_FILE}" ]]; then
+    while IFS= read -r entry || [[ -n "${entry}" ]]; do
+      [[ -z "${entry}" ]] && continue
+      local ro_container_dir="${entry%%=*}"
+      local ro_host_dir="${entry#*=}"
+      ro_host_dir="$(strip_quotes "$(expand_env_path "${ro_host_dir}")")"
+      RUN_FLAGS+=(-v "${ro_host_dir}:${ro_container_dir}:ro")
+      RUN_LOG+=("    mount (ro): ${ro_host_dir} -> ${ro_container_dir}")
+    done < "${READ_ONLY_MOUNTS_FILE}"
   fi
 
   local add_host

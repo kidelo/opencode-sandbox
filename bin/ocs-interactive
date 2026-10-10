@@ -67,11 +67,21 @@ if [[ ${TUI_FORK} -eq 1 && ${TUI_CONT} -eq 0 && -z "${TUI_SES}" ]]; then
   exit 2
 fi
 
-# Build the command the entrypoint evals as 'dev'. Bare 'opencode' starts the
-# TUI (model + provider pinned by the read-only opencode.jsonc); the resume
-# flags are appended as separate tokens, the session id shell-quoted so it
-# survives the entrypoint's eval (same printf-%q discipline as ocs-run).
-OPCODE_CMD="opencode"
+# Per-project overrides from policy.txt (written by ocs-rebuild-container).
+# MODEL:  use the project's `model:` key when set; otherwise the shared
+#         OPENCODE_MODEL constant in bin/shared (kept as the fallback).
+# TIMEOUT: wall-clock seconds; 0/empty => no limit.
+POLICY_MODEL="$(read_policy model 2>/dev/null || true)"
+MODEL="${POLICY_MODEL:-${OPENCODE_MODEL}}"
+POLICY_TIMEOUT="$(read_policy timeout 2>/dev/null || true)"
+[[ "${POLICY_TIMEOUT}" =~ ^[0-9]+$ ]] || POLICY_TIMEOUT=0
+
+# Build the command the entrypoint evals as 'dev'. 'opencode' starts the TUI;
+# provider/permissions come from the read-only opencode.jsonc, and the model is
+# pinned explicitly with -m (the TUI does not read an OPENCODE_MODEL env var).
+# The resume flags are appended as separate tokens, the session id shell-quoted
+# so it survives the entrypoint's eval (same printf-%q discipline as ocs-run).
+OPCODE_CMD="opencode --model $(printf '%q' "${MODEL}")"
 [[ ${TUI_CONT} -eq 1 ]] && OPCODE_CMD="${OPCODE_CMD} --continue"
 [[ -n "${TUI_SES}" ]] && OPCODE_CMD="${OPCODE_CMD} --session $(printf '%q' "${TUI_SES}")"
 [[ ${TUI_FORK} -eq 1 ]] && OPCODE_CMD="${OPCODE_CMD} --fork"
@@ -105,19 +115,28 @@ build_run_flags
 # Distinct name so a concurrent ocs-start-container (web) can keep running.
 NAME="${CONTAINER_NAME}-tui-$$"
 
-echo "Starting interactive opencode session (model: ${OPENCODE_MODEL}) ..."
+echo "Starting interactive opencode session (model: ${MODEL}) ..."
 echo "   container: ${NAME}"
 echo "   type:      interactive TUI (no web server)"
 echo "   resume:    ${TUI_RESUME_DESC}"
+if [[ "${POLICY_TIMEOUT}" -gt 0 ]]; then echo "   timeout:   ${POLICY_TIMEOUT}s"; fi
 for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done
 echo "---"
 echo ""
 
 # OPCODE_CMD is eval'd by the entrypoint as the dev user (see the SC2016 note
 # near the bottom of docker/entrypoint.sh). 'opencode' is on dev's PATH.
-exec "${CONTAINER_RUNTIME}" run --rm --init -it \
-  --name "${NAME}" \
-  -e "OPCODE_CMD=${OPCODE_CMD}" \
-  -e "OPENCODE_MODEL=${OPENCODE_MODEL}" \
-  "${RUN_FLAGS[@]}" \
-  "${CONTAINER_NAME}"
+if [[ "${POLICY_TIMEOUT}" -gt 0 ]]; then
+  exec timeout --foreground "${POLICY_TIMEOUT}" \
+    "${CONTAINER_RUNTIME}" run --rm --init -it \
+      --name "${NAME}" \
+      -e "OPCODE_CMD=${OPCODE_CMD}" \
+      "${RUN_FLAGS[@]}" \
+      "${CONTAINER_NAME}"
+else
+  exec "${CONTAINER_RUNTIME}" run --rm --init -it \
+    --name "${NAME}" \
+    -e "OPCODE_CMD=${OPCODE_CMD}" \
+    "${RUN_FLAGS[@]}" \
+    "${CONTAINER_NAME}"
+fi

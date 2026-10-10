@@ -20,7 +20,9 @@ fi
 
 # Not writable — appending to the file must fail (the mount is :ro and/or
 # the host file is not dev-owned; either way a write is not permitted).
-if printf '\n' >> "${CFG}" 2>/dev/null; then
+# 2>/dev/null must precede >> so the redirection-failure message is
+# suppressed on the passing path (expected EROFS).
+if printf '\n' 2>/dev/null >> "${CFG}"; then
   fail "could append to ${CFG} — read-only config mount not enforced"
 fi
 

@@ -9,7 +9,10 @@
 . "$(dirname "$0")/../common.sh"
 
 AGENT_DNS_FILE="/etc/agent-dns"
-MODE="$(tr -d '[:space:]' < "${AGENT_DNS_FILE}" 2>/dev/null || echo deny)"
+# 2>/dev/null must precede < so a (non-fatal) redirection failure is not
+# printed; unreadable/absent file falls back to the default mode.
+MODE="$(tr -d '[:space:]' 2>/dev/null < "${AGENT_DNS_FILE}" || true)"
+MODE="${MODE:-deny}"
 echo "agent-dns mode: ${MODE} (from ${AGENT_DNS_FILE})"
 
 if ! command -v dig >/dev/null 2>&1; then

@@ -10,12 +10,12 @@ OpenCode is a powerful AI coding assistant — but by default it runs on your ho
 
 **opencode-sandbox** runs OpenCode inside a Docker container, giving each project its own isolated environment:
 
-- 🔒 **Scoped access** — OpenCode sees only one read-write directory, the project **workspace**; its config is mounted **read-only**, and the sandbox's own runtime state is hidden from it
+- 🔒 **Scoped access** — OpenCode sees only one read-write directory, the project **workspace**; its config is mounted **read-only**, extra input dirs can be mounted read-only (`read-only-mounts`), and the sandbox's own runtime state is hidden from it
 - 🧩 **Per-project configuration** — AI providers, API keys, and model settings are configured independently per project
 - 💾 **Persistent session state** — each project retains its own OpenCode history and session between container runs
 - 🧹 **Clean environment** — no bleed-over between projects; rebuild any time for a fresh start
 - 🛡️ **Network isolation** — every sandbox gets its own dedicated Docker network and an internal firewall; egress is proxy- or firewall-restricted, and the container is dropped to a non-root user
-- 🧱 **DoS-hardened** — fixed limits on memory, CPU, and process count plus `no-new-privileges`, so one sandbox can never take down the host
+- 🧱 **DoS-hardened** — fixed limits on memory, CPU, process count, and maximum single-file size (`RLIMIT_FSIZE`) plus `no-new-privileges`, a **read-only rootfs with a sized tmpfs** for `/tmp` / `/run` / `/var/tmp` / `$HOME` (so temp writes are memory-bounded, never host-disk-backed), and **IPv6 disabled** inside the namespace — one sandbox can never take down or persistently alter the host
 - 🧲 **DNS-tunnel blocked** — the agent cannot use the resolver `127.0.0.11:53` as an exfil/C2 channel (uid-scoped drop by default; squid-uid and all IP-only endpoints unaffected — re-open only by explicit choice via `agent-dns: allow`)
 - 🧪 **Verified** — a built-in 21-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress, resource limits active, two running containers cannot see each other, and the DNS-tunnel gate is in the configured state — **all blocked/verified**
 
@@ -27,7 +27,7 @@ export PATH="…/opencode-sandbox:$PATH"
 ocs init my-sandbox && ocs start my-sandbox   # → http://127.0.0.1:4096
 ```
 
-**Inside the container** there is exactly **one** user read-write directory — `/workspace` (your project's `workspace/`). Everything OpenCode needs besides that is read-only or internal: `opencode.jsonc` (model/provider/permissions) at `/etc/opencode/opencode.jsonc` (**read-only**, so the agent can read its own config but never rewrite it), and the OpenCode session/read-write state tree (persistent, at `/home/dev/.local/share/opencode`). The sandbox's build context and `.sandbox` runtime tree are **never visible** in the container.
+**Inside the container** there is exactly **one** user read-write directory — `/workspace` (your project's `workspace/`). Everything OpenCode needs besides that is read-only or internal: `opencode.jsonc` (model/provider/permissions) at `/etc/opencode/opencode.jsonc` (**read-only**, so the agent can read its own config but never rewrite it), and the OpenCode session/read-write state tree (persistent, at `/home/dev/.local/share/opencode`). You may additionally mount extra host dirs read-write (`volume-mounts`) or **read-only** (`read-only-mounts`) — the workspace remains the single writable output dir. The sandbox's build context and `.sandbox` runtime tree are **never visible** in the container.
 
 The container is based on Debian (python:3.13-slim-bookworm). All software — OpenCode, shell packages, and (in the `full` profile) the dev toolchain — is installed via `apt` (and `pip` for the Python data/office/PDF/OCR/sci stack) during the image build. **No extra toolchain (mise, etc.) needs to be installed on your host, and the container has no access to your Docker daemon.**
 
@@ -50,6 +50,7 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 - [Container lifecycle](#container-lifecycle)
 - [Network isolation](#network-isolation)
 - [Configuration](#configuration--configopencode-sandbox-configyaml)
+  - [Per-project policy](#per-project-policy) (`cpus`, `memory`, `pids`, `timeout`, `model`)
 - [Hooks](#hooks)
 - [Project layout](#project-layout)
 - [Per-project state](#per-project-state)
@@ -167,7 +168,7 @@ Starts the sandbox for the current project. Each invocation creates a fresh cont
 - Sources `opencode-sandbox-pre-start-container.sh` from the project root, if it exists (see [Hooks](#hooks))
 - Forwards whitelisted host environment variables into the container (as configured in `opencode-sandbox-config.yaml`)
 - Mounts the project's configured workspace dir (the `workspace:` key, default `workspace/`) at the fixed path `/workspace` inside the container — a stable path, independent of where the project lives on the host
-- Mounts any additional directories configured in the `volume-mounts` section of `opencode-sandbox-config.yaml`
+- Mounts any additional directories configured in the `volume-mounts` (read-write) and `read-only-mounts` (read-only) sections of `opencode-sandbox-config.yaml`
 - Exposes OpenCode on `http://127.0.0.1:<opencode-port>` (default: `4096`)
 - Press `Ctrl+C` to stop and remove the container
 
@@ -234,10 +235,10 @@ Runs the sandbox security test suite. **No running container needed** — `ocs t
 
 `ocs test` builds and runs from the **reserved** `config/Dockerfile.test` profile (a network-analysis image: `nmap`, `tcpdump`, DNS/traceroute tools, `python3`, `jq`). It is stored under its own tag `ocs-<SANDBOX_ID>-test`, so running the suite **never changes** the project's working image (built from `minimal` or `full`). The test image is cached for a fast re-run; it is removed on a fail/crash and by `ocs kill`.
 
-The suite has five kinds of checks (21 cases in total):
-- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network (its own `/24` inside `sandbox-network-cidr`), that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, that **resource limits** (memory, CPU, process count) plus `no-new-privileges` are actually enforced, that the **DNS-tunnel gate** is configured as `agent-dns` states (dev-uid `:53` dropped while squid keeps its proxy path), that `config/opencode.jsonc` is mounted read-only, that `/workspace` is the writable dir, that the configured `opencode-port` reaches the run environment, and that squid is running exactly when `http-domain-whitelist` is non-empty (state consistency).
+The suite has five kinds of checks (23 cases in total):
+- **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network (its own `/24` inside `sandbox-network-cidr`), that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, that **resource limits** (memory, CPU, process count, single-file size) plus `no-new-privileges` are actually enforced, that the **rootfs is read-only** with a sized `/tmp` tmpfs (and the workspace + state binds remain writable), that **IPv6 is disabled** in the namespace, that the **DNS-tunnel gate** is configured as `agent-dns` states (dev-uid `:53` dropped while squid keeps its proxy path), that `config/opencode.jsonc` is mounted read-only, that `/workspace` is the writable dir, that the configured `opencode-port` reaches the run environment, and that squid is running exactly when `http-domain-whitelist` is non-empty (state consistency).
 - **Positive egress (the allowed path works)** — proves a **listed** endpoint is actually reachable, not only that unlisted ones are blocked: `ocs test` bakes two harness targets into the *test image only* (via build args in `Dockerfile.test`) and starts short-lived listener containers for them — an **intranet endpoint** `<sandbox-net>.50:8765` (the case must connect to it, and to the adjacent unlisted port it must *not* be able to) and a **host port** `docker.host:8766` (same positive/negative contrast). These rules exist only in the `ocs-<SANDBOX_ID>-test` image and its two listener containers, both removed with the test image — the working image's firewall is never changed.
-- **Run-wiring (env / mounts)** — `ocs test` injects a random sentinel env var (and a fixed one) and a temp dir — pre-filled with a sentinel file — mounted read-write at `/mnt/ocs-fwd`, and the cases assert the env value and the sentinel file both arrive intact (plus that the mount is writable): the same `-e` / `-v` plumbing used by `env-passthrough` / `env` / `volume-mounts`.
+- **Run-wiring (env / mounts)** — `ocs test` injects a random sentinel env var (and a fixed one) and a temp dir — pre-filled with a sentinel file — mounted read-write at `/mnt/ocs-fwd`, and the cases assert the env value and the sentinel file both arrive intact (plus that the mount is writable): the same env / `-v` plumbing used by `env-passthrough` / `env` / `volume-mounts` / `read-only-mounts`.
 - **Multi-container** — starts a real second container on a scratch network and asserts that the sandbox cannot resolve its name or connect to its IP: two running sandboxes never see each other.
 - **AI-agent red-team** — drives the configured model (via `opencode run`) to actively try six escapes (proxy bypass, direct egress, privilege escalation, root-file read, system write, secret read). The agent writes a JSON report to `/tmp` inside the container; the runner then fails if the agent reports any attack as `succeeded`.
 
@@ -348,7 +349,7 @@ The name is optional when you run it from inside a sandbox project (the project 
 
 ## Network isolation
 
-Isolation works on four levels:
+Isolation works on five levels:
 
 **1. Own Docker network (L2 separation).** Every sandbox container runs on a dedicated Docker network named `ocs-net-<SANDBOX_ID>`, created automatically on first use. All sandboxes get their addresses from the range configured under `sandbox-network-cidr` (default **`10.77.0.0/16`**, so containers live on `10.77.x.x`); each sandbox receives its own `/24` inside that range. Consequences:
 
@@ -360,9 +361,11 @@ Isolation works on four levels:
 
 All outbound traffic is routed via the proxy automatically through the standard `http_proxy` / `https_proxy` environment variables set by the container entrypoint.
 
-**3. Resource limits (host-DoS guard).** Every container run gets fixed, host-safe caps so a misbehaving or prompt-injected agent cannot exhaust the machine: memory `4g` (swap locked to the same value), CPU `2.0`, process count `256`, and `no-new-privileges` (setuid escalation is blocked even without any caps granted). The values are defaults set in `bin/shared` (`build_run_flags`); raise them there in `bin/shared` if a project needs more, then start your container again (no rebuild required — the limits are applied at run time, not baked into the image). These limits are asserted inside the container by `ocs test` (case 10).
+**3. Resource limits (host-DoS guard).** Every container run gets fixed, host-safe caps so a misbehaving or prompt-injected agent cannot exhaust the machine: memory `4g` (swap locked to the same value), CPU `2.0`, process count `256`, a maximum single-file size of `8g` (`RLIMIT_FSIZE` / `--ulimit fsize`), and `no-new-privileges` (setuid escalation is blocked even without any caps granted). The numeric limits are per-project policy keys (`cpus:`/`memory:`/`pids:`/`disk:` in `opencode-sandbox-config.yaml`) that can be overridden per project without touching `bin/shared` — see [Per-project policy](#per-project-policy). A `timeout:` key caps the wall-clock lifetime of `ocs tui` and `ocs run` sessions. A `model:` key pins the OpenCode model for `ocs tui` / `ocs run` to a different provider/model without changing the read-only `opencode.jsonc`. These limits are asserted inside the container by `ocs test` (case 10).
 
 **4. DNS-tunnel gate (exfil/C2).** Docker's embedded resolver `127.0.0.11:53` is a forwarder to the internet — leaving it open to the agent is a working DNS-tunnel channel even though TCP egress is blocked. Therefore the **agent user's** `:53` egress is dropped by the entrypoint's firewall (uid-scoped, placed before the loopback rule where the tunnel lives). **Squid (proxy uid) is unaffected** and keeps its resolver for `http-domain-whitelist` domains. The gate is a top-level scalar `agent-dns: deny|allow` in `config/opencode-sandbox-config.yaml`, **default `deny`**. `allow` re-opens the tunnel *by explicit config choice* — use only when an endpoint is a hostname that must be resolved by the agent (e.g. a model `baseURL` that is not an IP). These rules + their positive counterpart (squid path is still usable) are verified by `ocs test` (case 12).
+
+**5. Read-only rootfs + bounded tmpfs + no IPv6 (in-container hardening).** Every door runs on a **read-only** overlay rootfs, so the image layer set is immutable at runtime — an escaped agent cannot trojan `opencode`, the squid config or the firewall scripts mid-run (a `docker diff` afterwards shows nothing outside the explicit rw mounts). The paths that still need writing (`/tmp`, `/run`, `/var/tmp`, `/home/dev` and the nested `/home/dev/.local`) are **sized, world-writable (`mode=1777`) tmpfs** mounts, so their usage is bounded by the existing `--memory` cgroup instead of being host-disk-backed (`RLIMIT_FSIZE` only caps a *single* file, not the many-small-files case). The `1777` mode is what lets the unprivileged agent create its own XDG dirs without the container needing the `CAP_CHOWN` capability. The real rw data still flows through the explicit bind mounts (workspace, opencode state, `volume-mounts`). **IPv6 is disabled** inside the namespace (`net.ipv6.conf.*.disable_ipv6=1`) — the sandbox networks are v4-only anyway, so removing the whole v6 stack shrinks the surface we reason about (the `ip6tables` rules remain as defence-in-depth). Asserted by `ocs test` (cases 22 and 23).
 
 > **Notes:** The container requires the `NET_ADMIN` Docker capability for `iptables` — this is added automatically by the run commands. The sandbox container can **not** talk to the host Docker daemon: no socket is mounted and no `docker`/`podman` CLI is installed. Two containers running in parallel (e.g. `ocs start` + `ocs tui`) provably cannot reach each other: `ocs test` starts a second "peer" container on a scratch network and verifies from inside the sandbox that neither its name resolves nor a connection to its IP succeeds (case 11).
 
@@ -399,6 +402,12 @@ env-passthrough:
 
 env:
   GITHUB_REPOSITORY: my-org/my-repo
+
+volume-mounts:                 # extra host dirs mounted read-WRITE (container: host)
+  # /cache: "$HOME/.cache/my-project"
+
+read-only-mounts:              # extra host dirs mounted READ-ONLY (container: host)
+  # /data: "$HOME/datasets"
 ```
 
 **`sandbox-name`** — human-readable project identifier (required):
@@ -465,14 +474,45 @@ env:
 **`env-passthrough`** — host environment variables to forward into the container:
 - Format is `CONTAINER_VAR: HOST_VAR` — use the same name on both sides for a simple passthrough, or different names to rename
 - Values are read from the host shell at container start time; variables not set on the host are skipped and noted in the startup summary
-- Use this for secrets and credentials — values never touch a file
+- Use this for secrets and credentials — values are passed via a per-run `0600` env file in the project's gitignored `.sandbox/` tree (never on the `docker run` command line), so they do not leak into the host `ps` output or `docker inspect`, and the file is removed/overwritten on the next run
 - Inline comments are stripped from each entry (`  TOKEN: HOST_TOKEN # note` → `TOKEN=HOST_TOKEN`)
+- A rebuild is required after adding or removing entries
+
+**`volume-mounts`** — extra host directories mounted into the container:
+- Format is `CONTAINER_DIR: HOST_DIR` (e.g. `/cache: "$HOME/.cache/my-project"`) — the container path is the key, the host path the value
+- These are mounted **read-write**. The workspace is already the single rw output dir at `/workspace`; use this section for extra writable scratch/cache locations only
+- `$VAR` / `${VAR}` in the host path is expanded from the host environment (no shell execution)
+- A rebuild is required after adding or removing entries
+
+**`read-only-mounts`** — extra host directories mounted **read-only** into the container:
+- Same `CONTAINER_DIR: HOST_DIR` format as `volume-mounts`, but each mount is attached `:ro`, so the agent can read but never modify it
+- Use this to expose input/reference trees (datasets, docs, a shared cache) while keeping the workspace the only writable directory — the agent still writes its output to `/workspace`
+- `$VAR` / `${VAR}` expansion applies to the host path exactly as for `volume-mounts`
 - A rebuild is required after adding or removing entries
 
 **`env`** — static environment variables set directly in the container:
 - Use this for non-secret project context that is safe to commit: repo name, project identifiers, feature flags, etc.
 - Values are literal — no shell expansion
 - A rebuild is required after adding or removing entries
+
+### Per-project policy
+
+Six optional top-level keys tune each sandbox without forking the code. Every key is optional — when a key is absent, the host-DoS-guard / shared default applies (noted per key). All six are validated at `ocs rebuild` with a clear error on a bad value, and are applied at container start time (no image rebuild needed — the values are read from the project's `.sandbox/build/policy.txt` by `build_run_flags` and the doors themselves).
+
+| Key | Meaning | Form | Default when unset | Applies to |
+|---|---|---|---|---|
+| `cpus:` | Docker CPU quota | number `>= 0.1` (e.g. `0.5`, `1`, `2.0`) | `2.0` | every `docker run` (all doors, incl. `ocs test`) |
+| `memory:` | Docker memory limit (and `--memory-swap`) | `Nk` or `Nm` or `Ng` (e.g. `512m`, `1g`, `4g`) | `4g` | every `docker run` (all doors, incl. `ocs test`) |
+| `pids:` | Docker PID limit | positive integer (e.g. `128`, `256`) | `256` | every `docker run` (all doors, incl. `ocs test`) |
+| `disk:` | max size of a single file (`RLIMIT_FSIZE` / `--ulimit fsize`) | `Nk` / `Nm` / `Ng` with `N >= 1` (e.g. `512m`, `1g`, `8g`) | `8g` | every `docker run` (all doors, incl. `ocs test`) |
+| `timeout:` | wall-clock session cap, seconds | integer `>= 0` (`0` = no limit) | `0` | `ocs tui` and `ocs run` only |
+| `model:` | OpenCode model pin | provider/model id (e.g. `ollama/qwen3.8:27b`) | shared `OPENCODE_MODEL` constant in `bin/shared` | `ocs tui` and `ocs run` only |
+
+- **`cpus` / `memory` / `pids` / `disk` (resource limits).** These replace the hard-coded DoS-guard defaults for *this project only* and are applied to **every** door of the project, including the one-shot `ocs test` container. `memory` also sets `--memory-swap` to the same value; `disk` caps the size of a **single file** via `RLIMIT_FSIZE` (it is not a total-filesystem quota — the `/tmp` / `/run` / `/var/tmp` / `$HOME` trees are sized tmpfs bounded by `--memory`, and total usage in the rw bind mounts is left to the host user's own quota); `no-new-privileges` is always applied and is not a policy key. Example: `cpus: 0.5`  `memory: 2g`  `pids: 128`  `disk: 8g`.
+- **`timeout` (session cap).** Cuts a `ocs tui` / `ocs run` session that runs past *N* seconds. The cap wraps the container start, so it bounds the whole one-shot door; the agent-DNS gate, the NoNewPrivs guard, and the cgroup limits are unaffected. It does **not** apply to `ocs start`/`web` (long-running by design), `ocs terminal`, or `ocs test` (run its own timed suite). `0` (the default) disables the cap.
+- **`model` (model pin).** Pins the model for `ocs tui` and `ocs run`. It overrides the shared `OPENCODE_MODEL` constant in `bin/shared`, which remains the fallback when the key is unset. `ocs start`/`web` and `ocs test` are governed by the read-only `config/opencode.jsonc`, not this key. The named model must be reachable by the sandbox (on an `intranet-endpoints` entry, or allowed via `http-domain-whitelist`) and its provider must be enabled in `opencode.jsonc`.
+- Changing any of these keys requires `ocs rebuild` (to re-extract `policy.txt`); the change itself needs no image rebuild.
+- `ocs test` case 10 still verifies the DoS guard is active — and, when you set `cpus`/`memory`/`pids`/`disk`, it additionally asserts the running container's cgroup values (and `RLIMIT_FSIZE`) match the configured limits exactly.
 
 `ocs rebuild` reads this file to generate derived build artifacts — **a rebuild is required after changes**. The file is required; `ocs rebuild` fails if it is missing.
 
@@ -545,7 +585,7 @@ opencode-sandbox/
 ├── test/
 │   ├── common.sh               # Helpers shared by test cases (pass/fail, tcp_connect)
 │   ├── listener.py             # Positive-egress listener for cases 15/16 (baked into the test image)
-│   └── cases/                  # Individual security test cases (01-21)
+│   └── cases/                  # Individual security test cases (01-23)
 ├── README.md                   # This file — reference & design rationale
 ├── HOWTO.md                    # Step-by-step setup and run guide
 ├── AGENTS.md                   # Conventions for contributors working on the sandbox itself
@@ -570,8 +610,10 @@ Each project gets its own isolated container named `ocs-<SANDBOX_ID>`. The `SAND
 │   ├── host-ports.txt           # Extracted from host-ports
 │   ├── intranet-endpoints.txt   # Extracted from intranet-endpoints
 │   ├── env-passthrough.txt      # Extracted from env-passthrough
+│   ├── env-passthrough.runtime  # Per-run 0600 env file for env-passthrough (removed if empty)
 │   ├── env.txt                  # Extracted from env
 │   ├── volume-mounts.txt        # Extracted from volume-mounts
+│   ├── read-only-mounts.txt     # Extracted from read-only-mounts
 │   ├── entrypoint.sh            # Copied from the sandbox repo (docker/entrypoint.sh)
 │   └── docker-build.log         # Docker build output (created during build)
 └── state/                       # Persistent (survives a rebuild)

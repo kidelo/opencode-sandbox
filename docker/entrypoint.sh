@@ -2,6 +2,19 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# Read-only rootfs + tmpfs note. Every door runs with `--read-only` plus a sized
+# tmpfs map (see build_run_flags in bin/shared), so the overlay image is
+# immutable at runtime and temp/home writes are memory-bounded. The bounding
+# capability set is deliberately {NET_ADMIN,SETUID,SETGID} — NO CAP_CHOWN — and
+# Docker's --tmpfs has no uid/gid option, so this entrypoint chowns nothing.
+# The dirs the unprivileged users write are mounted mode=1777 (sticky
+# world-writable): dev creates its own ~/.cache|.config and ~/.local/state; the
+# opencode state bind at ~/.local/share/opencode stays untouched (never recurse
+# a chown into ~/.local — that path can sit over host files). squid needs no
+# proxy-owned dir: docker/squid.conf uses `pid_filename none`.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
 # Proxy: start squid ONLY when outbound domains are whitelisted. With an empty
 # http-domain-whitelist there is no external server the agent needs to reach,
 # so we skip squid entirely (no squid process, no proxy env); the firewall

@@ -77,21 +77,32 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   ENV_PASSTHROUGH="${OPENCODE_SANDBOX_DIR}/env-passthrough.txt"
   ENV_STATIC="${OPENCODE_SANDBOX_DIR}/env.txt"
   VOLUME_MOUNTS="${OPENCODE_SANDBOX_DIR}/volume-mounts.txt"
+  READ_ONLY_MOUNTS="${OPENCODE_SANDBOX_DIR}/read-only-mounts.txt"
   true > "${SQUID_WHITELIST}"
   true > "${HOST_PORTS}"
   true > "${INTRANET_ENDPOINTS}"
   true > "${ENV_PASSTHROUGH}"
   true > "${ENV_STATIC}"
   true > "${VOLUME_MOUNTS}"
+  true > "${READ_ONLY_MOUNTS}"
 
    # ---------------------------------------------------------------------------
    # Scalar flags — top-level "key: value" entries (not sections).
    # Add new top-level scalars here; their values are set during the parse loop.
    # ---------------------------------------------------------------------------
-     cfg_opencode_port="4096"
-     cfg_sandbox_network_cidr="10.77.0.0/16"
-     cfg_dockerfile="minimal"
-     cfg_agent_dns="deny"
+      cfg_opencode_port="4096"
+      cfg_sandbox_network_cidr="10.77.0.0/16"
+      cfg_dockerfile="minimal"
+      cfg_agent_dns="deny"
+      # Per-project policy knobs (all optional; the defaults below are the
+      # host-DoS guard values applied by build_run_flags when the artifact
+      # is absent). See README "Per-project policy".
+      cfg_cpus=""
+      cfg_memory=""
+      cfg_pids=""
+      cfg_disk=""
+      cfg_timeout=""
+      cfg_model=""
 
   section=""
   while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -114,11 +125,17 @@ if [[ -f "${CONFIG_FILE}" ]]; then
          # Has a value — top-level scalar; clear section context
          section=""
              case "${top_key}" in
-               opencode-port)            cfg_opencode_port="${top_value}" ;;
-               sandbox-network-cidr)     cfg_sandbox_network_cidr="${top_value}" ;;
-               dockerfile)               cfg_dockerfile="${top_value}" ;;
-               agent-dns)                cfg_agent_dns="${top_value}" ;;
-               # sandbox-name and workspace are handled by shared
+                opencode-port)            cfg_opencode_port="${top_value}" ;;
+                sandbox-network-cidr)     cfg_sandbox_network_cidr="${top_value}" ;;
+                dockerfile)               cfg_dockerfile="${top_value}" ;;
+                agent-dns)                cfg_agent_dns="${top_value}" ;;
+                cpus)                     cfg_cpus="${top_value}" ;;
+                memory)                   cfg_memory="${top_value}" ;;
+                pids)                     cfg_pids="${top_value}" ;;
+                disk)                     cfg_disk="${top_value}" ;;
+                timeout)                  cfg_timeout="${top_value}" ;;
+                model)                    cfg_model="${top_value}" ;;
+                # sandbox-name and workspace are handled by shared
              esac
        fi
       continue
@@ -151,9 +168,10 @@ if [[ -f "${CONFIG_FILE}" ]]; then
       value="${value%"${value##*[![:space:]]}"}"
       [[ -z "${value}" ]] && continue
       case "${section}" in
-        env-passthrough) echo "${key}=${value}" >> "${ENV_PASSTHROUGH}" ;;
-        env)             echo "${key}=${value}" >> "${ENV_STATIC}" ;;
-        volume-mounts)   echo "${key}=${value}" >> "${VOLUME_MOUNTS}" ;;
+        env-passthrough)  echo "${key}=${value}" >> "${ENV_PASSTHROUGH}" ;;
+        env)              echo "${key}=${value}" >> "${ENV_STATIC}" ;;
+        volume-mounts)    echo "${key}=${value}" >> "${VOLUME_MOUNTS}" ;;
+        read-only-mounts) echo "${key}=${value}" >> "${READ_ONLY_MOUNTS}" ;;
       esac
       continue
     fi
@@ -198,6 +216,72 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   fi
   printf '%s\n' "${cfg_sandbox_network_cidr}" > "${CIDR_FILE}"
 
+  # ---------------------------------------------------------------------------
+  # Per-project policy knobs (cpus / memory / pids / disk / timeout / model).
+  # All are optional; missing keys fall back to the host-DoS-guard
+  # defaults (memory=4g, cpus=2.0, pids=256, disk=8g, timeout=0,
+  # model=OPENCODE_MODEL).
+  # Values validated here are the single source of truth written to
+  # policy.txt (0600, one key=value per line) and model.txt (0600). Every
+  # door reads them via read_policy() in bin/shared at start time, so a
+  # policy change only needs 'ocs rebuild' — no image rebuild required.
+  # ---------------------------------------------------------------------------
+  if [[ -n "${cfg_cpus}" ]]; then
+    # Integer or decimal; >= 0.1 (docker enforces a minimum on the host).
+    if [[ ! "${cfg_cpus}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || awk -v v="${cfg_cpus}" 'BEGIN { exit (v < 0.1) ? 0 : 1 }'; then
+      echo "ERROR: 'cpus' must be a number >= 0.1 (e.g. 0.5, 1, 2.0); got '${cfg_cpus}'." >&2
+      exit 1
+    fi
+  fi
+  if [[ -n "${cfg_memory}" ]]; then
+    # Form: <number> + one of {k,m,g}; lowercase; no space.
+    if [[ ! "${cfg_memory}" =~ ^[0-9]+[kmg]$ ]]; then
+      echo "ERROR: 'memory' must be of the form Nk | Nm | Ng (e.g. 512m, 1g, 4g); got '${cfg_memory}'." >&2
+      exit 1
+    fi
+  fi
+  if [[ -n "${cfg_pids}" ]]; then
+    if [[ ! "${cfg_pids}" =~ ^[1-9][0-9]*$ ]]; then
+      echo "ERROR: 'pids' must be a positive integer (e.g. 128, 256, 512); got '${cfg_pids}'." >&2
+      exit 1
+    fi
+  fi
+  if [[ -n "${cfg_disk}" ]]; then
+    # Form: <positive number> + one of {k,m,g}; lowercase; no space. Applied
+    # as RLIMIT_FSIZE (--ulimit fsize) — the max size of a single file.
+    if [[ ! "${cfg_disk}" =~ ^[1-9][0-9]*[kmg]$ ]]; then
+      echo "ERROR: 'disk' must be of the form Nk | Nm | Ng with N >= 1 (e.g. 512m, 1g, 8g); got '${cfg_disk}'." >&2
+      exit 1
+    fi
+  fi
+  if [[ -n "${cfg_timeout}" ]]; then
+    if [[ ! "${cfg_timeout}" =~ ^[0-9]+$ ]]; then
+      echo "ERROR: 'timeout' must be an integer number of seconds (0 = unlimited); got '${cfg_timeout}'." >&2
+      exit 1
+    fi
+  fi
+  if [[ -n "${cfg_model}" ]]; then
+    # Provider/model identifier, e.g. 'ollama/qwen3.8:27b' or
+    # 'openai/gpt-4o-mini'. Allowed characters: letters, digits and
+    # separators '_'/'/'/':'/'.'/'-'. Must start with an alphanumeric.
+    if [[ ! "${cfg_model}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_/:.\-]*$ ]]; then
+      echo "ERROR: 'model' must be a provider/model identifier (letters, digits, '_'/'/'/':'/'.'/'-'); got '${cfg_model}'." >&2
+      exit 1
+    fi
+  fi
+
+  POLICY_FILE="${OPENCODE_SANDBOX_DIR}/policy.txt"
+  rm -f -- "${POLICY_FILE}"
+  {
+    printf 'cpus=%s\n'      "${cfg_cpus}"
+    printf 'memory=%s\n'    "${cfg_memory}"
+    printf 'pids=%s\n'      "${cfg_pids}"
+    printf 'disk=%s\n'      "${cfg_disk}"
+    printf 'timeout=%s\n'   "${cfg_timeout}"
+    printf 'model=%s\n'     "${cfg_model}"
+  } > "${POLICY_FILE}"
+  chmod u=rw,go= "${POLICY_FILE}"
+
   # Validate intranet endpoints: strict "ipv4:port" form, octets 0-255,
   # port 1-65535. (The shape regex alone accepts up to three digits per
   # octet — 999.x.x.x:port would pass shape but be rejected by iptables at
@@ -229,10 +313,14 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   echo "  Extracted $(wc -l < "${ENV_PASSTHROUGH}") env var name(s) into env-passthrough.txt"
   echo "  Extracted $(wc -l < "${ENV_STATIC}") static env var(s) into env.txt"
   echo "  Extracted $(wc -l < "${VOLUME_MOUNTS}") volume mount(s) into volume-mounts.txt"
+  echo "  Extracted $(wc -l < "${READ_ONLY_MOUNTS}") read-only mount(s) into read-only-mounts.txt"
     echo "  OpenCode HTTP port: ${PORT}"
     echo "  Agent DNS (dev uid): ${cfg_agent_dns} ($( [[ ${cfg_agent_dns} == deny ]] && echo 'DNS tunnel blocked' || echo 'DNS tunnel OPEN by config' ))"
     echo "  Sandbox network range: ${cfg_sandbox_network_cidr} (each sandbox gets its own /24)"
   echo "  Workspace (single rw dir -> /workspace): ${SANDBOX_WORKSPACE_DIR:-${ROOT_DIR}/workspace}"
+  # Policy summary — show the value, or the default (so the user sees what
+  # will actually apply when the key is unset in opencode-sandbox-config.yaml).
+  echo "  Policy: cpus=${cfg_cpus:-2.0}, memory=${cfg_memory:-4g}, pids=${cfg_pids:-256}, disk=${cfg_disk:-8g}, timeout=${cfg_timeout:-0}s, model=${cfg_model:-shared}"
 else
   echo "  Missing required config file: ${CONFIG_FILE}" >&2
   echo "  Create opencode-sandbox-config.yaml (use ocs-init template) and rebuild." >&2
