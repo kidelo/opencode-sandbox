@@ -100,17 +100,29 @@ RUN git config --system core.hooksPath /dev/null
 
 # --- opencode CLI ------------------------------------------------------------
 # Pinned to a specific release so the sandbox does not silently track "latest".
-# The sandbox depends on specific CLI flags (TUI -c/--continue, -s/--session,
-# --fork; ocs run non-interactive mode) that can drift between releases. To
-# bump, change the default below *and* the OPENCODE_BUILD_VERSION constant in
+# The sandbox depends on specific OpenCode 2 CLI behaviour: `opencode serve
+# --hostname --port` (web server, basic auth via OPENCODE_SERVER_PASSWORD), the
+# full-TUI --standalone/--server/--continue/-s --session client surface (auth
+# via OPENCODE_PASSWORD), `opencode run --standalone -m ... -` (one-shot), and
+# OPENCODE_CONFIG + the v2 config shape. Any of these can drift between releases.
+# To bump, change the default below *and* the OPENCODE_BUILD_VERSION constant in
 # bin/ocs-rebuild-container (single source passed as --build-arg), then bump
 # OCS_BASE_API there so a stale cached base image gets re-baked.
-ARG OPENCODE_BUILD_VERSION=1.18.32
-RUN curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path --version "${OPENCODE_BUILD_VERSION}" \
+# NOTE: OpenCode 2 uses the /v2/install endpoint — the v1 installer at
+# opencode.ai/install refuses 2.x releases by design.
+#
+# Version guard: `opencode --version` prints "opencode v<VERSION>" (OpenCode 2),
+# so the check strips the "opencode v" prefix (POSIX # expansion) before
+# comparing to the pinned bare version. NOTE: no inline comments are allowed
+# inside the \-continuation chain below — a comment line there breaks the
+# `&&` sequence (the RUN uses bash via the SHELL directive).
+ARG OPENCODE_BUILD_VERSION=2.1.2
+RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path --version "${OPENCODE_BUILD_VERSION}" \
     && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
     && chown "${USER_ID}:${GROUP_ID}" /usr/local/bin/opencode \
     && chmod a+rx /usr/local/bin/opencode \
-    && test "$(opencode --version)" = "${OPENCODE_BUILD_VERSION}"
+    && opencode_ver="$(opencode --version)" \
+    && [ "${opencode_ver#opencode v}" = "${OPENCODE_BUILD_VERSION}" ]
 
 # --- headless xdg-open stub --------------------------------------------------
 RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \

@@ -131,10 +131,9 @@ Leave with `Ctrl+D` or `/exit`; the container is removed automatically. No web s
 ```bash
 ocs tui my-sandbox -c            # continue the last session
 ocs tui my-sandbox -s ses_…      # continue a specific session by id
-ocs tui my-sandbox -c --fork     # resume the last as a fork (needs -c or -s)
 ```
 
-You can also omit the name when you are inside the project: `ocs tui -c` (the project is resolved from the current directory). `-c` and `-s` are mutually exclusive; `--fork` needs one of them; unknown flags fail loudly.
+You can also omit the name when you are inside the project: `ocs tui -c` (the project is resolved from the current directory). `-c` and `-s` are mutually exclusive; unknown flags fail loudly. (OpenCode 2 dropped the V1 `--fork` TUI flag — fork from within the TUI, or via `opencode run --fork` for automation.)
 
 ---
 
@@ -245,7 +244,7 @@ read-only-mounts:               # extra host dirs mounted READ-ONLY (agent can r
 # disk: 8g                      # max size of a single file (RLIMIT_FSIZE)
 # nofile: 8192                  # max open file descriptors (RLIMIT_NOFILE)
 # timeout: 0                    # wall-clock cap for `ocs tui` / `ocs run` (0 = none)
-# model: ollama/qwen3.8:27b     # -m pin for `ocs tui` / `ocs run`
+# model: ollama/qwen3.8:27b     # -m pin for `ocs run`; display only for `ocs tui` (the V2 TUI has no --model flag — its model is the config `model` pin)
 
 # Extra hardening (optional; defaults shown). See README → Extra hardening.
 # seccomp: on                   # on | off — Docker default seccomp profile (off = opt-out)

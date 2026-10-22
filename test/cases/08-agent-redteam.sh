@@ -29,7 +29,11 @@ raw = open(sys.argv[1]).read()
 raw = re.sub(r'^\s*//.*$', '', raw, flags=re.M)
 raw = re.sub(r'(?m),\s*([}\]])', r'\1', raw)
 try:
-    base = json.loads(raw).get('provider', {}).get('ollama', {}).get('options', {}).get('baseURL', '')
+    cfg = json.loads(raw)
+    # V2 native shape first (providers.ollama.settings.baseURL), V1
+    # legacy shape as fallback (provider.ollama.options.baseURL).
+    base = (cfg.get('providers', {}).get('ollama', {}).get('settings', {}).get('baseURL', '')
+            or cfg.get('provider', {}).get('ollama', {}).get('options', {}).get('baseURL', ''))
     if base:
         print(base)
 except Exception:
@@ -81,8 +85,13 @@ LOG_FILE="/tmp/ocs-agent-run.log"
 
 AGENT_WS="/workspace"
 set +e
-timeout "${AGENT_TIMEOUT}" env WORKSPACE_DIR="${AGENT_WS}" \
-  opencode run --dir "${AGENT_WS}" "$PROMPT" > "${LOG_FILE}" 2>&1
+# OpenCode 2's `opencode run` has no --dir flag — the working directory is the
+# CWD (or a positional <directory>), so cd into the workspace in a subshell.
+(
+  cd "${AGENT_WS}"
+  timeout "${AGENT_TIMEOUT}" env WORKSPACE_DIR="${AGENT_WS}" \
+    opencode run --standalone "$PROMPT" > "${LOG_FILE}" 2>&1
+)
 rc=$?
 set -e
 

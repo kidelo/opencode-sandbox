@@ -33,7 +33,7 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 
 > **Fast setup (`ocs init` is quick by design).** The expensive, project-independent work is built **once per host** into local **base images** (not re-run per project), and every profile just layers its own extras on top of them. There are two levels: `ocs-base` (the common packages + `dev` user + the OpenCode download, from `config/base.Dockerfile`) and `ocs-base-full` (adds the `full` profile's dev toolchain — the apt set + the large pip data/office/PDF/OCR/sci stack — from `config/base-full.Dockerfile`). So the first `ocs rebuild` on a host pays for the base(s) once, and each subsequent `ocs init`/`ocs rebuild` (for any project, **any profile**) only rebuilds the thin per-project tail — a few seconds, not minutes. `ocs kill` removes both shared bases (it's a host-wide cleanup); `ocs clean <name>` leaves them in place so other projects keep working.
 >
-> The **OpenCode CLI is pinned to a specific version** in the base image (`config/base.Dockerfile` — `ARG OPENCODE_BUILD_VERSION`, currently 1.18.32). Every container therefore runs the exact CLI version it was built with, so behaviour is reproducible host-to-host and rebuild-to-rebuild. Bump that one line (and `OCS_BASE_API` in `bin/ocs-rebuild-container`) to track a new CLI release — `ocs rebuild` then re-builds the bases once (see "Image profiles").
+> The **OpenCode CLI is pinned to a specific version** in the base image (`config/base.Dockerfile` — `ARG OPENCODE_BUILD_VERSION`, currently 2.1.2 — OpenCode 2). Every container therefore runs the exact CLI version it was built with, so behaviour is reproducible host-to-host and rebuild-to-rebuild. OpenCode 2 is installed from the **`https://opencode.ai/v2/install`** endpoint (the OpenCode 1 installer refuses 2.x releases); the install URL is baked into `config/base.Dockerfile`. Bump the one version line (and `OCS_BASE_API` in `bin/ocs-rebuild-container`) to track a new CLI release — `ocs rebuild` then re-builds the bases once (see "Image profiles").
 
 > **Want to just start using it?** Read [HOWTO.md](HOWTO.md) — a step-by-step guide covering setup, every way to run OpenCode, the working directories, config, and troubleshooting. This README is the reference and the design rationale.
 
@@ -77,7 +77,8 @@ Other combinations will most likely work too — if you try one, please [report 
 ## Prerequisites
 
 - A Docker-compatible container runtime (e.g. [Docker](https://docs.docker.com/get-docker/), [Podman](https://podman.io/), [Colima](https://colima.run/))
-- [opencode](https://opencode.ai/) if you want to use opencode via a local terminal client instead of the web UI (optional, but recommended for a seamless experience)
+
+No host-side opencode install is needed — every door (including `ocs terminal`) runs its OpenCode inside the sandbox container.
 
 ---
 
@@ -190,7 +191,7 @@ Opens the browser with credentials embedded in the URL (basic auth) on macOS or 
 
 ### `ocs terminal <name>`
 
-Attaches an OpenCode terminal session to the running web container.
+Attaches an OpenCode terminal session to the running web container — **from inside it**. The door `docker exec`s a TUI into the web container pointed at the in-container server (`opencode --server http://127.0.0.1:$OPENCODE_PORT`), so it shares sessions with the browser UI and never requires an opencode install on the host.
 
 ### `ocs tui [name] [resume-flags]`
 
@@ -203,14 +204,14 @@ Runs a one-shot `docker run` with a distinct name, so a web container from `ocs 
 ```sh
 ocs tui my-sandbox -c                  # continue the last session
 ocs tui my-sandbox -s <session-id>     # continue a specific session
-ocs tui my-sandbox -c --fork           # resume the last session as a fork
 ```
 
 - `-c` / `--continue` — continue the last session (use after an abort).
 - `-s` / `--session <id>` — continue that specific session by id (`opencode session list` shows ids; use one inside the container to find the current id).
-- `--fork` — fork the session before continuing (combine with `-c` or `-s`).
 - The **name is optional**: `ocs tui -c` works from inside a sandbox project (the project is resolved from the current directory), so you don't need to repeat the name to resume.
-- One of `-c`/`-s` is required for `--fork`; `-c` and `-s` are mutually exclusive. Unknown flags fail loudly (they are never silently dropped).
+- `-c` and `-s` are mutually exclusive. Unknown flags fail loudly (they are never silently dropped).
+- **Model pinning**: the model is set by the read-only `config/opencode.jsonc` (`model` + `enabled_providers`), not a CLI flag — OpenCode 2's full TUI has no `--model` flag (only the `run` and `mini` subcommands do).
+- **No `--fork` (changed in OpenCode 2):** the V1 `ocs tui --fork` door flag is gone — OpenCode 2 dropped `--fork` from the TUI's CLI flag set. Resume with `-c`/`-s`; fork a session from within the TUI, or via `opencode run --fork` for automation.
 
 ### `ocs run [name] <prompt>`
 
@@ -334,7 +335,7 @@ The name is optional when you run it from inside a sandbox project (the project 
 | After changing `config/Dockerfile.<profile>` | `ocs rebuild my-sandbox` then `ocs start my-sandbox` |
 | After changing `config/opencode-sandbox-config.yaml` | `ocs rebuild my-sandbox` then `ocs start my-sandbox` |
 | Interactive session (TUI, no web) | `ocs tui my-sandbox` |
-| Resume an aborted TUI session | `ocs tui my-sandbox -c` (last) · `-s <id>` (one) · `+ --fork` |
+| Resume an aborted TUI session | `ocs tui my-sandbox -c` (last) · `-s <id>` (one) |
 | One-shot from a prompt file | `ocs run my-sandbox your/prompt.md` |
 | Verify sandbox security | `ocs test my-sandbox` (its own test image; no web session needed) |
 | List sandbox projects | `ocs list` |
@@ -525,11 +526,11 @@ Six optional top-level keys tune each sandbox without forking the code. Every ke
 | `disk:` | max size of a single file (`RLIMIT_FSIZE` / `--ulimit fsize`) | `Nk` / `Nm` / `Ng` with `N >= 1` (e.g. `512m`, `1g`, `8g`) | `8g` | every `docker run` (all doors, incl. `ocs test`) |
 | `nofile:` | max open file descriptors (`RLIMIT_NOFILE` / `--ulimit nofile`) | integer `64`-`1048576` (e.g. `1024`, `8192`) | `8192` | every `docker run` (all doors, incl. `ocs test`) |
 | `timeout:` | wall-clock session cap, seconds | integer `>= 0` (`0` = no limit) | `0` | `ocs tui` and `ocs run` only |
-| `model:` | OpenCode model pin | provider/model id (e.g. `ollama/qwen3.8:27b`) | shared `OPENCODE_MODEL` constant in `bin/shared` | `ocs tui` and `ocs run` only |
+| `model:` | OpenCode model pin | provider/model id (e.g. `ollama/qwen3.8:27b`) | shared `OPENCODE_MODEL` constant in `bin/shared` | `ocs run` (pins `-m`); the TUI model is the `config/opencode.jsonc` pin instead (OpenCode 2's full TUI has no `--model` flag) |
 
 - **`cpus` / `memory` / `pids` / `disk` / `nofile` (resource limits).** These replace the hard-coded DoS-guard defaults for *this project only* and are applied to **every** door of the project, including the one-shot `ocs test` container. `memory` also sets `--memory-swap` to the same value; `disk` caps the size of a **single file** via `RLIMIT_FSIZE` (it is not a total-filesystem quota — the `/tmp` / `/run` / `/var/tmp` / `$HOME` trees are sized tmpfs bounded by `--memory`, and total usage in the rw bind mounts is left to the host user's own quota); `nofile` caps the **number of open file descriptors** a runaway agent can hold (a classic fd-exhaustion DoS); `no-new-privileges` is always applied and is not a policy key. Example: `cpus: 0.5`  `memory: 2g`  `pids: 128`  `disk: 8g`  `nofile: 4096`.
 - **`timeout` (session cap).** Cuts a `ocs tui` / `ocs run` session that runs past *N* seconds. The cap wraps the container start, so it bounds the whole one-shot door; the agent-DNS gate, the NoNewPrivs guard, and the cgroup limits are unaffected. It does **not** apply to `ocs start`/`web` (long-running by design), `ocs terminal`, or `ocs test` (run its own timed suite). `0` (the default) disables the cap.
-- **`model` (model pin).** Pins the model for `ocs tui` and `ocs run`. It overrides the shared `OPENCODE_MODEL` constant in `bin/shared`, which remains the fallback when the key is unset. `ocs start`/`web` and `ocs test` are governed by the read-only `config/opencode.jsonc`, not this key. The named model must be reachable by the sandbox (on an `intranet-endpoints` entry, or allowed via `http-domain-whitelist`) and its provider must be enabled in `opencode.jsonc`.
+- **`model` (model pin).** Pins the model for `ocs run` (explicit `-m`). It overrides the shared `OPENCODE_MODEL` constant in `bin/shared`, which remains the fallback when the key is unset. **OpenCode 2 note:** the full TUI no longer has a `--model` CLI flag, so `ocs tui` gets its model from the read-only `config/opencode.jsonc` (`model` + `enabled_providers`) — this key is still shown in the TUI banner and must match that pin. `ocs start`/`web` and `ocs test` are governed by the read-only `config/opencode.jsonc`, not this key. The named model must be reachable by the sandbox (on an `intranet-endpoints` entry, or allowed via `http-domain-whitelist`) and its provider must be enabled in `opencode.jsonc`.
 - Changing any of these keys requires `ocs rebuild` (to re-extract `policy.txt`); the change itself needs no image rebuild.
 - `ocs test` case 10 still verifies the DoS guard is active — and, when you set `cpus`/`memory`/`pids`/`disk`/`nofile`, it additionally asserts the running container's cgroup values (and `RLIMIT_FSIZE` / `RLIMIT_NOFILE`) match the configured limits exactly.
 
@@ -597,10 +598,10 @@ opencode-sandbox/
 ├── bin/
 │   ├── ocs-init                # Initialize a project under ./sandboxes/ (repo-local)
 │   ├── ocs-rebuild-container   # Build the Docker image
-│   ├── ocs-start-container     # Start the web container (opencode web)
-│   ├── ocs-interactive         # One-shot container with the opencode TUI (no web server; -c/--continue, -s/--session, --fork resume an aborted session)
+│   ├── ocs-start-container     # Start the web container (opencode serve)
+│   ├── ocs-interactive         # One-shot container with the opencode TUI (no web server; -c/--continue, -s/--session resume an aborted session)
 │   ├── ocs-run                 # One-shot `opencode run` from a markdown prompt file
-│   ├── ocs-terminal            # Attach a terminal session to the web server
+│   ├── ocs-terminal            # Attach an in-container TUI to the running web container (docker exec + opencode --server)
 │   ├── ocs-web                 # Open the web UI
 │   ├── ocs-web-auth            # Open the web UI with authentication
 │   ├── ocs-test                # Run the security test suite (starts its own container)
@@ -703,7 +704,7 @@ This repository is a **fork** of [comsysto/opencode-sandbox](https://github.com/
 | **Workspace & config mounts** | Project mounted at its **same absolute host path** inside the container | **Fixed `/workspace` (rw)** — the single user rw dir — plus `opencode.jsonc` at **`/etc/opencode/opencode.jsonc` (read-only)**, so the agent can read its own config but never rewrite it; the sandbox's `.sandbox` runtime tree is **masked** out of the workspace |
 | **State location** | Global host dir `~/.opencode-sandbox/<SANDBOX_ID>/` | **In-project** `.sandbox/{build,state}/` (opencode state tree persistent across runs; gitignored; removed by `ocs clean`/`ocs kill`) |
 | **Container lifecycle** | Long-running web container as the norm | **Build-once, one-shot runs** — the image is the only persistent artifact; web / TUI / one-shot / test are all fresh `docker run`s that clean themselves up |
-| **Run modes** | Web UI (`ocs start`) | Added **`ocs tui`** (TUI — with `-c`/`--continue`, `-s`/`--session`, `--fork` to resume an aborted session) and **`ocs run`** (markdown prompt file **or inline prompt string**) one-shot modes |
+| **Run modes** | Web UI (`ocs start`) | Added **`ocs tui`** (TUI — with `-c`/`--continue`, `-s`/`--session` to resume an aborted session) and **`ocs run`** (markdown prompt file **or inline prompt string**) one-shot modes |
 | **Observability** | Manual `docker ps`/`docker logs` | **`ocs status [name]`** — one-line view of sandbox containers on the host (subset of `docker ps`); **`ocs logs [name] [flags]`** — project-scoped log access, flags pass through to `docker logs` (-f, -n, --since, --tail all, -t) |
 | **CLI reproducibility** | OpenCode CLI installed as newest available (varies by host and by time) | **Pinned to a specific version** (`config/base.Dockerfile` — `ARG OPENCODE_BUILD_VERSION`) so every container runs the same CLI regardless of when / where the image is built |
 | **Build safety** | Concurrent rebuilds race on shared build dir | **`flock` guard** — second concurrent `ocs rebuild` exits 75 (lock released on process exit; no stale lock risk) |

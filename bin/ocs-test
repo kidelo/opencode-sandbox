@@ -69,9 +69,11 @@ EP_IP="${SUBNET_BASE%.0}.50"
 # extra hardening (nofile ulimit, seccomp off-knob, sensitive-path ro
 # overlays, git hook neutralization baked in the base, Landlock helper,
 # squid dst-ACL rebinding guard, QUIC/DoT/DoH drops, egress-audit knob,
-# sensitive-paths list — cases 24-29) so stale cached test images get
-# rebuilt with the new profile layers.
-TEST_API="6"
+# sensitive-paths list — cases 24-29); v7 ships the OpenCode 1.x -> 2.1.x
+# migration (the entrypoint's role-split auth model + `opencode serve`, the
+# v2 base installer, and case 08's `opencode run --standalone`) so a stale
+# pre-migration cached test image is rebuilt against the new baked-in layers.
+TEST_API="7"
 HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API}"
 
 # Rebuild only when the cached image is missing or was built before the

@@ -11,7 +11,8 @@ set -euo pipefail
 # resumed:
 #   ocs tui [name] -c            # continue the last session
 #   ocs tui [name] -s <id>       # continue a specific session by id
-#   ocs tui [name] --fork        # fork before continuing (with -c or -s)
+# (OpenCode 2 removed --fork from the TUI's CLI flag set — forking is
+#  done inside the TUI / session picker, not as a door flag.)
 
 # Source common configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -26,7 +27,6 @@ Runs the opencode interactive TUI (one-shot, sandboxed). Resume options
 (passed through to 'opencode'):
   -c, --continue        continue the last session (e.g. after an abort)
   -s, --session <id>    continue a specific session by id
-      --fork            fork the session before continuing (needs -c or -s)
   -h, --help            show this help
 
 'name' may be omitted when run from inside a sandbox project (it is then
@@ -42,7 +42,6 @@ print_sandbox_dir
 # placeholder — ignore it. Unknown args fail loudly instead of being dropped.
 TUI_CONT=0
 TUI_SES=""
-TUI_FORK=0
 while [[ $# -gt 0 ]]; do
   case "${1}" in
     "")             shift; continue ;;
@@ -55,42 +54,44 @@ while [[ $# -gt 0 ]]; do
       case "${2}" in -*) echo "ocs tui: the --session id must not start with '-'." >&2; usage >&2; exit 2 ;; esac
       [[ ${TUI_CONT} -eq 0 ]] || { echo "ocs tui: use either --continue OR --session <id>." >&2; usage >&2; exit 2; }
       TUI_SES="${2}"; shift ;;
-    --fork)         TUI_FORK=1 ;;
     *)              echo "ocs tui: unknown argument: ${1}" >&2; usage >&2; exit 2 ;;
   esac
   shift
 done
 
-if [[ ${TUI_FORK} -eq 1 && ${TUI_CONT} -eq 0 && -z "${TUI_SES}" ]]; then
-  echo "ocs tui: --fork requires --continue or --session <id>." >&2
-  usage >&2
-  exit 2
-fi
-
 # Per-project overrides from policy.txt (written by ocs-rebuild-container).
 # MODEL:  use the project's `model:` key when set; otherwise the shared
-#         OPENCODE_MODEL constant in bin/shared (kept as the fallback).
+#         OPENCODE_MODEL constant in bin/shared (kept as the fallback). NOTE:
+#         in OpenCode 2 the full TUI takes no --model flag — this value is
+#         for the banner and must match the `model` pin in the mounted
+#         config/opencode.jsonc (AGENTS.md keeps them in sync).
 # TIMEOUT: wall-clock seconds; 0/empty => no limit.
 POLICY_MODEL="$(read_policy model 2>/dev/null || true)"
 MODEL="${POLICY_MODEL:-${OPENCODE_MODEL}}"
 POLICY_TIMEOUT="$(read_policy timeout 2>/dev/null || true)"
 [[ "${POLICY_TIMEOUT}" =~ ^[0-9]+$ ]] || POLICY_TIMEOUT=0
 
-# Build the command the entrypoint evals as 'dev'. 'opencode' starts the TUI;
-# provider/permissions come from the read-only opencode.jsonc, and the model is
-# pinned explicitly with -m (the TUI does not read an OPENCODE_MODEL env var).
+# Build the command the entrypoint evals as 'dev'. Bare 'opencode' (no
+# subcommand) is the OpenCode 2 full-screen TUI; its CLI flag set is
+# --standalone/--server/--auto/--continue/--session/--prompt — NO --model and
+# NO --fork (those exist only on the `mini` and `run` subcommands). The model
+# is therefore pinned by the read-only opencode.jsonc mounted at
+# /etc/opencode/opencode.jsonc (`model` + the `enabled_providers` filter),
+# which the TUI honors. `ocs run` still pins explicitly with `-m` (opencode
+# run DOES have --model).
+# --standalone (OpenCode 2) keeps the server private to this container:
+# without it the client auto-starts a shared background service that would
+# outlive the TUI and the one-shot container.
 # The resume flags are appended as separate tokens, the session id shell-quoted
 # so it survives the entrypoint's eval (same printf-%q discipline as ocs-run).
-OPCODE_CMD="opencode --model $(printf '%q' "${MODEL}")"
+OPCODE_CMD="opencode --standalone"
 [[ ${TUI_CONT} -eq 1 ]] && OPCODE_CMD="${OPCODE_CMD} --continue"
 [[ -n "${TUI_SES}" ]] && OPCODE_CMD="${OPCODE_CMD} --session $(printf '%q' "${TUI_SES}")"
-[[ ${TUI_FORK} -eq 1 ]] && OPCODE_CMD="${OPCODE_CMD} --fork"
 
 # Human summary of the resume state (startup banner).
 TUI_RESUME_DESC="fresh session (no resume flag)"
 [[ ${TUI_CONT} -eq 1 ]] && TUI_RESUME_DESC="continue last session"
 [[ -n "${TUI_SES}" ]] && TUI_RESUME_DESC="continue session: ${TUI_SES}"
-[[ ${TUI_FORK} -eq 1 ]] && TUI_RESUME_DESC="${TUI_RESUME_DESC} (+fork)"
 
 if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
   echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
@@ -115,9 +116,10 @@ build_run_flags
 # Distinct name so a concurrent ocs-start-container (web) can keep running.
 NAME="${CONTAINER_NAME}-tui-$$"
 
-echo "Starting interactive opencode session (model: ${MODEL}) ..."
+echo "Starting interactive opencode session ..."
 echo "   container: ${NAME}"
 echo "   type:      interactive TUI (no web server)"
+echo "   model:     ${MODEL} (pinned in config/opencode.jsonc — the V2 TUI has no --model flag)"
 echo "   resume:    ${TUI_RESUME_DESC}"
 if [[ "${POLICY_TIMEOUT}" -gt 0 ]]; then echo "   timeout:   ${POLICY_TIMEOUT}s"; fi
 for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done

@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# ocs-terminal — attach a TUI to the running web container FROM INSIDE the
+# sandbox. All opencode invocations must run inside the container (that is the
+# project's core principle), so this door does not call a host `opencode`
+# binary; it `docker exec`s into the running web container and starts the
+# in-container TUI pointed at the in-container server:
+#
+#   opencode --server http://127.0.0.1:$OPENCODE_PORT
+#
+# (`--server URL` is the OpenCode 2 successor of the removed `attach`
+# command.) The TUI shares sessions with the browser client.
+
 # Source common configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
@@ -15,6 +26,24 @@ if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
   exit 1
 fi
 
+# The web container must be running (ocs start <name>).
+if ! "${CONTAINER_RUNTIME}" inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 2>/dev/null | grep -q true; then
+  echo "Web container ${CONTAINER_NAME} is not running."
+  echo "Start it first: ocs start"
+  exit 1
+fi
 
-OPENCODE_SERVER_PASSWORD="$(cat "${OPENCODE_PASSWORD_FILE}")" opencode attach "http://${LOCALHOST}:${PORT}" "$@"
-
+# docker exec does not inherit the entrypoint's env; pass the client-side
+# password and the port explicitly. OpenCode 2 splits auth by role: the SERVER
+# reads OPENCODE_SERVER_PASSWORD (set by the entrypoint), while a CLIENT that
+# connects via --server presents the password through OPENCODE_PASSWORD. This
+# door's TUI is a client, so it needs OPENCODE_PASSWORD. It just connects to the
+# container's existing foreground `opencode serve` (started by ocs start), so it
+# shares sessions with the browser client and no daemon is spawned here.
+# SC2016: intentional — ${OPENCODE_PORT} must expand in the dev shell, not here.
+# shellcheck disable=SC2016
+exec "${CONTAINER_RUNTIME}" exec -it \
+  -e "OPENCODE_PASSWORD=$(cat "${OPENCODE_PASSWORD_FILE}")" \
+  -e "OPENCODE_PORT=${PORT}" \
+  "${CONTAINER_NAME}" \
+  gosu dev bash -c 'exec opencode --server "http://127.0.0.1:${OPENCODE_PORT:-4096}"'

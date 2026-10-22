@@ -121,7 +121,9 @@ fi
 # contains $(cmd) — is safe data, not executable code.)
 # shellcheck disable=SC2016
 SAFE_PATH="$(printf '%q' "${INNER_PATH}")"
-OPCODE_CMD="exec opencode run -m '${MODEL}' \"\$(cat ${SAFE_PATH})\""
+# --standalone (OpenCode 2): run with a private server instead of the shared
+# background service, so no opencode daemon outlives this one-shot container.
+OPCODE_CMD="exec opencode run --standalone -m '${MODEL}' \"\$(cat ${SAFE_PATH})\""
 if [[ ${#} -gt 0 ]]; then
   ESCAPED_ARGS="$(printf '%q ' "$@")"
   OPCODE_CMD=" ${OPCODE_CMD} ${ESCAPED_ARGS}"

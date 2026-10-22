@@ -2,17 +2,32 @@
   "$schema": "https://opencode.ai/config.json",
   // Always run the sandbox model (CLI paths also pin it via -m)
   "model": "ollama/qwen3.8:27b",
-  "small_model": "ollama/qwen3.8:27b",
-  "subagent_depth": 2,
 
-  // Only the ollama provider may load — no other provider/model can be used
+  // V2: the V1 `small_model` key becomes the built-in `title` agent's model.
+  "agents": {
+    "title": {
+      "model": "ollama/qwen3.8:27b"
+    }
+  },
+
+  // V2: top-level `subagent_depth` moved under `experimental`; `todo` (the
+  // V1 `permission.todowrite`) is an experimental feature in V2 — enable it.
+  "experimental": {
+    "subagent_depth": 2,
+    "todo": true
+  },
+
+  // Only the ollama provider may load — no other provider/model can be used.
+  // (V2 normalizes the V1 `enabled_providers` provider filter in memory.)
   "enabled_providers": ["ollama"],
 
-  "provider": {
+  // V2: singular `provider` -> plural `providers`; `npm` -> `package` (AI SDK
+  // packages keep the `aisdk:` prefix); `options` -> `settings`.
+  "providers": {
     "ollama": {
-      "npm": "@ai-sdk/openai-compatible",
+      "package": "aisdk:@ai-sdk/openai-compatible",
       "name": "Ollama",
-      "options": {
+      "settings": {
         // Your local model server (Ollama). Use "ollama" (default) for the
         // official ollama.ai cloud, or point at your own instance.
         "baseURL": "http://192.168.0.139:11434/v1",
@@ -31,20 +46,20 @@
     }
   },
 
-  "permission": {
-    "read": "allow",
-    "write": "allow",
-    "edit": "allow",
-    "bash": "allow",
+  // V2: the V1 `permission` object becomes the ordered `permissions` array.
+  // Action renames: bash -> shell, task -> subagent, write/patch -> edit.
+  "permissions": [
     // The container's own firewall/mounts are the real security boundary —
     // let the agent attempt things outside the workspace so those controls
     // are what actually stop it (used by the ocs-test red-team).
-    "external_directory": "allow",
-    "task": "allow",
-    "todowrite": "allow",
+    { "action": "read", "resource": "*", "effect": "allow" },
+    { "action": "edit", "resource": "*", "effect": "allow" },
+    { "action": "shell", "resource": "*", "effect": "allow" },
+    { "action": "external_directory", "resource": "*", "effect": "allow" },
+    { "action": "subagent", "resource": "*", "effect": "allow" },
     // No web access per default — the sandbox firewall already denies
     // all non-whitelisted egress, the tool denies as defense in depth.
-    "webfetch": "deny",
-    "websearch": "deny"
-  }
+    { "action": "webfetch", "resource": "*", "effect": "deny" },
+    { "action": "websearch", "resource": "*", "effect": "deny" }
+  ]
 }

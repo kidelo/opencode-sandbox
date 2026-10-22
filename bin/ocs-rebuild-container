@@ -475,8 +475,8 @@ fi
 # sandbox ships (passed to base.Dockerfile as --build-arg). Bumping it (and
 # OCS_BASE_API, since base.Dockerfile's layer set effectively changes) forces
 # both level base images to be rebuilt on the next ocs rebuild.
-OCS_BASE_API="4"
-OPENCODE_BUILD_VERSION="1.18.32"
+OCS_BASE_API="5"
+OPENCODE_BUILD_VERSION="2.1.2"
 
 ensure_base_image() {
   local tag="${1:?base image name is required}"

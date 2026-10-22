@@ -42,7 +42,7 @@ fi
 # Assemble the shared run flags (workspace + state + env + mounts + add-host)
 build_run_flags
 
-echo "Starting container ${CONTAINER_NAME} (opencode web)..."
+echo "Starting container ${CONTAINER_NAME} (opencode serve)..."
 echo ""
 # shellcheck disable=SC2153  # PORT and LOCALHOST are defined in shared
 echo "   container: ${CONTAINER_NAME}"

@@ -248,6 +248,12 @@ fi
 # ---------------------------------------------------------------------------
 OPENCODE_SERVER_PASSWORD=$(cat /opencode-password)
 export OPENCODE_SERVER_PASSWORD
+# OpenCode 2 auth is role-split: the SERVER reads OPENCODE_SERVER_PASSWORD
+# (above); a CLIENT that connects with --server presents its password via
+# OPENCODE_PASSWORD. Export both so in-container client commands (e.g. a
+# `ocs terminal` exec, or a TUI attached to this server) authenticate.
+OPENCODE_PASSWORD="${OPENCODE_SERVER_PASSWORD}"
+export OPENCODE_PASSWORD
 : "${OPENCODE_PORT:=4096}"
 export OPENCODE_PORT
 
@@ -266,6 +272,11 @@ exec gosu dev bash -c '
   if [[ -n "${OPCODE_CMD:-}" ]]; then
     eval "${OPCODE_CMD}"
   else
-    exec /usr/local/bin/opencode web --mdns --port "${OPENCODE_PORT:-4096}"
+    # OpenCode 2 dropped the web/attach subcommands and the --mdns flag;
+    # serve is the foreground server (API and web UI). --hostname 0.0.0.0
+    # gives host reachability (what the old --mdns provided via its
+    # bind side-effect). OPENCODE_SERVER_PASSWORD (seeded above) still
+    # gates the server with HTTP basic auth.
+    exec /usr/local/bin/opencode serve --hostname 0.0.0.0 --port "${OPENCODE_PORT:-4096}"
   fi
 '

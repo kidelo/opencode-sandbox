@@ -8,9 +8,9 @@ set -euo pipefail
 #   ocs init <name>          Create a new sandbox project at ./sandboxes/<name>/
 #   ocs rebuild <name>       Build the container image for <name>
 #   ocs start <name>         Web container (one-shot, Ctrl-C stops)
-#   ocs tui <name> [-c] [-s ID] [--fork]   Interactive TUI (one-shot);
+#   ocs tui <name> [-c] [-s ID]            Interactive TUI (one-shot);
 #                                          resume the last (-c) or a session (-s)
-#                                          after an abort, optionally forked (--fork)
+#                                          after an abort. (OpenCode 2 dropped --fork from the TUI.)
 #   ocs run <name> <prompt> [args]   One-shot 'opencode run' (prompt file or inline string)
 #   ocs web <name>           Open the web UI in the browser
 #   ocs web-auth <name>      Open the web UI with a pre-authenticated URL
@@ -48,16 +48,16 @@ commands:
                           --dockerfile: image profile; --no-build: skip build)
   rebuild <name>   Build the container image for <name>
   start <name>     Start the one-shot web container (Ctrl+C stops and removes it)
-   tui [name] [-c] [-s ID] [--fork]
+   tui [name] [-c] [-s ID]
                          Interactive OpenCode TUI (one-shot). Resume an aborted
-                         session: -c/--continue (last), -s/--session <id> (one),
-                         --fork (fork before continuing; needs -c or -s). The name
-                         may be omitted when run from inside a sandbox project.
+                         session: -c/--continue (last) or -s/--session <id> (one).
+                         The name may be omitted when run from inside a sandbox
+                         project. (OpenCode 2 dropped the V1 --fork TUI flag.)
   run <name> <prompt> [args]   One-shot opencode run; <prompt> is a prompt
                        file (md) or an inline prompt string
   web <name>       Open the web UI in the browser
   web-auth <name>  Open the web UI in the browser with pre-authenticated basic-auth URL
-  terminal <name>  Attach an opencode terminal session to the running web container
+  terminal <name>  Attach an in-container TUI (docker exec) to the running web container
   test <name>      Run the security test suite (starts its own one-shot container)
   list             List sandbox projects (./sandboxes/)
   status [name]    List sandbox containers on this host (all, or for one project)
@@ -191,12 +191,12 @@ case "${cmd}" in
     ;;
   tui|interactive)
     # ocs tui [name] [resume-flags]
-    # The resume flags (-c/--continue, -s/--session <id>, --fork) may appear
+    # The resume flags (-c/--continue, -s/--session <id>) may appear
     # either before or after the project name; the dispatcher re-orders only
     # what it sees (the name, if present) and passes the rest through verbatim.
     # ocs-interactive parses the flags and builds OPCODE_CMD from them.
     # First arg is a project NAME only if it is a valid sandbox name that names
-    # an existing project; otherwise it is a flag (e.g. -c, -s, --fork, --help)
+    # an existing project; otherwise it is a flag (e.g. -c, -s, --help)
     # and the project is resolved from the current directory.
     tui_first="${1:-}"
     [[ $# -gt 0 ]] && shift
@@ -205,7 +205,7 @@ case "${cmd}" in
       exec "${BIN_DIR}/ocs-interactive" "$@"
     fi
     # No name (or the first arg is a flag) — resolve the project from CWD and
-    # pass the first arg back (it is a flag like -c, --session, --fork, --help).
+    # pass the first arg back (it is a flag like -c, --session, --help).
     tui_dir="$(find_sandbox_root 2>/dev/null || true)"
     if [[ -n "${tui_dir}" && -d "${tui_dir}" ]]; then
       cd "${tui_dir}"
