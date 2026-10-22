@@ -6,13 +6,77 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub release: `RELEASE_V0.1-KIDELO` (2026-09-20). Releases
+Last published GitHub release: `RELEASE_V0.5-KIDELO` (2026-10-22). Releases
 v0.2–v0.4 below are local milestones shipped in the repo without GitHub
 release tags.
 
 ---
 
-## v0.5 — OpenCode 1.x → 2.1.x migration *(this push)*
+## v0.6 — plan-mode door + todo tool verified *(this push)*
+
+OpenCode 2's built-in **Plan** agent (a read-only primary agent) is now
+first-class in every door, and the **todo** tool — which V2 drops from the
+default toolset — is verified *on* and working.
+
+### Highlights
+
+- **`ocs plan` door** — plan-mode one-shot: identical to `ocs run`, pinned to
+  OpenCode's built-in **Plan** primary agent (`--agent plan` is forwarded to
+  `opencode run`). The Plan agent explores the codebase and discusses a plan
+  with you **without editing normal project files** (edits are denied; only
+  `~/.opencode/plan/*` is writable)
+- **Plan mode in the TUI** — **Tab** / **Shift+Tab** cycles the primary
+  agents live (Build ↔ Plan); switching Plan→Build injects a `build-switch`
+  system reminder. Plan first, review, Tab back to Build, implement
+- **`ocs run --agent <id>`** — extra args already pass through to
+  `opencode run`; the Plan agent is now a documented first-class example
+  (`ocs run <name> "plan this" --agent plan`)
+- **todo tool verified (2.1.2)** — OpenCode 2 ships the V1-era `todowrite`
+  tool **off by default**; the enabling key is `experimental.todo: true`
+  (already in the shipped `config/opencode.jsonc`; comment updated to
+  "verified"). Proven live: the model called `todowrite` (a two-item list)
+  with `status=completed`; the TUI renders the task list
+- **Docs** — README (new `ocs plan` section + door list), HOWTO (5b Tab
+  switching, 5c `--agent plan` + 5c+ `ocs plan`), AGENTS.md (door surface),
+  `ocs` help / `ocs-run` usage
+
+### Breaking changes
+
+None — purely additive (one new door; no flag/config changes).
+
+### Upgrade steps
+
+None — `ocs plan` is host-side dispatcher logic (no rebuild required).
+Projects whose `config/opencode.jsonc` predates v0.5 should take the repo
+template (v0.5 upgrade steps) to pick up the `experimental.todo` enablement.
+
+### Verification
+
+- **E2E through the sandbox:** `ocs plan 20o "Reply with exactly:
+  OCS-PLAN-OK"` — full path (dispatcher → ocs-run → entrypoint eval →
+  `opencode run --standalone -m ollama/qwen3.8:27b --agent plan`): agent
+  banner `> plan · qwen3.8:27b`, reply `OCS-PLAN-OK`, rc=0, all hardening
+  layers applied (agent-DNS gate, QUIC/DoT drops, git-hook sink, ro-rootfs,
+  limits)
+- **CLI-level:** `opencode run --standalone -m <model> --agent plan "…"` — the
+  exact command form the door produces, verified cold
+- **todo live probe (2.1.2 server API):** assistant `todowrite` tool call
+  `status=completed` (two-item todo list); V2's plan switch confirmed via
+  `session.switchAgent` (HTTP 204) + the synthetic "You are in Plan mode"
+  system message
+- `shellcheck` clean across `ocs bin/* bin/shared docker/entrypoint.sh`
+
+### Release metadata (v0.6)
+
+- **Tag (planned):** `RELEASE_V0.6-KIDELO`
+- **Base:** `aa9800e` (v0.5 docs)
+- **Commits in range:** `ocs` (new `plan` case arm + usage + header),
+  `bin/ocs-run` (usage example), `README.md`, `HOWTO.md`, `AGENTS.md`,
+  `config/opencode.jsonc` (todo comment, verified)
+
+---
+
+## v0.5 — OpenCode 1.x → 2.1.x migration *(published 2026-10-22)*
 
 Every door, the entrypoint, the config, and the base image now run
 **OpenCode 2.1.2** (was 1.18.32). OpenCode 2 reworked the CLI surface
@@ -95,7 +159,7 @@ install — the container keeps being the only place OpenCode runs.
 
 ### Release metadata (v0.5)
 
-- **Tag (planned):** `RELEASE_V0.5-KIDELO`
+- **Tag:** `RELEASE_V0.5-KIDELO` (published 2026-10-22)
 - **Base:** `31f7211` (v0.4)
 - **Commits in range:** `34c06cb` — 14 files: doors (`ocs-interactive`,
   `ocs-run`, `ocs-terminal`, `ocs-start-container`), entrypoint auth + `serve`,
@@ -175,7 +239,8 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.5** | **OpenCode 1.x → 2.1.x migration** (doors, entrypoint auth, config shape, base, `TEST_API` 7) | `RELEASE_V0.5-KIDELO` (planned) |
+| **v0.6** | **Plan-mode door (`ocs plan`)** + TUI Tab agent switching documented + `todo` tool verified on 2.1.2 | `RELEASE_V0.6-KIDELO` (planned) |
+| v0.5 | **OpenCode 1.x → 2.1.x migration** (doors, entrypoint auth, config shape, base, `TEST_API` 7) | `RELEASE_V0.5-KIDELO` (published) |
 | v0.4 | Extra hardening (seccomp / landlock / egress-audit / sensitive-paths / git-hook sink / squid rebinding) + test cases 24–29 | — (local) |
 | v0.3 | Per-project policy knobs + read-only rootfs / sized tmpfs / IPv6-off | — (local) |
 | v0.2 | TUI resume, `status`/`logs`, CLI pin, precompiled bases, resource limits, agent-DNS gate, 21-case suite | `RELEASE_V0.2-KIDELO` (local) |

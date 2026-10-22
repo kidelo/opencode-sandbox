@@ -12,6 +12,8 @@ set -euo pipefail
 #                                          resume the last (-c) or a session (-s)
 #                                          after an abort. (OpenCode 2 dropped --fork from the TUI.)
 #   ocs run <name> <prompt> [args]   One-shot 'opencode run' (prompt file or inline string)
+#   ocs plan [name] <prompt> [args]  Plan-mode one-shot: the run door pinned to
+#                                    OpenCode's read-only Plan agent
 #   ocs web <name>           Open the web UI in the browser
 #   ocs web-auth <name>      Open the web UI with a pre-authenticated URL
 #   ocs terminal <name>      Attach an opencode session to the running web container
@@ -55,6 +57,9 @@ commands:
                          project. (OpenCode 2 dropped the V1 --fork TUI flag.)
   run <name> <prompt> [args]   One-shot opencode run; <prompt> is a prompt
                        file (md) or an inline prompt string
+  plan [name] <prompt> [args]  Plan-mode one-shot: the run door pinned to
+                       OpenCode's read-only Plan agent (explores & plans,
+                       does not edit project files)
   web <name>       Open the web UI in the browser
   web-auth <name>  Open the web UI in the browser with pre-authenticated basic-auth URL
   terminal <name>  Attach an in-container TUI (docker exec) to the running web container
@@ -187,6 +192,29 @@ case "${cmd}" in
       exec "${BIN_DIR}/ocs-run" "${run_first}" "$@"
     fi
     echo "ocs: 'ocs run' needs a project — pass a name ('ocs run <name> <prompt>'), or run from inside a sandbox project ('ocs list' shows names)." >&2
+    exit 1
+    ;;
+  plan)
+    # ocs plan [name] <prompt> [args]
+    # Plan-mode one-shot: identical to `ocs run`, pinned to OpenCode's built-in
+    # Plan agent (a primary, read-only agent: it explores and discusses plans
+    # without editing normal project files). `--agent plan` is appended after
+    # the prompt/extra args, so ocs-run forwards it to `opencode run`.
+    # First-arg resolution mirrors `run`: a known project name selects the
+    # project; otherwise the first arg is the prompt (file or inline) and the
+    # project is resolved from the current directory.
+    plan_first="${1:-}"
+    [[ $# -gt 0 ]] && shift
+    if valid_sandbox_name "${plan_first}" && [[ -f "${SANDBOXES_BASE}/${plan_first}/config/opencode-sandbox-config.yaml" ]]; then
+      cd "${SANDBOXES_BASE}/${plan_first}"
+      exec "${BIN_DIR}/ocs-run" "$@" --agent plan
+    fi
+    plan_dir="$(find_sandbox_root 2>/dev/null || true)"
+    if [[ -n "${plan_dir}" && -d "${plan_dir}" ]]; then
+      cd "${plan_dir}"
+      exec "${BIN_DIR}/ocs-run" "${plan_first}" "$@" --agent plan
+    fi
+    echo "ocs: 'ocs plan' needs a project — pass a name ('ocs plan <name> <prompt>'), or run from inside a sandbox project ('ocs list' shows names)." >&2
     exit 1
     ;;
   tui|interactive)

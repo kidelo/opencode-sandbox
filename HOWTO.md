@@ -135,6 +135,8 @@ ocs tui my-sandbox -s ses_…      # continue a specific session by id
 
 You can also omit the name when you are inside the project: `ocs tui -c` (the project is resolved from the current directory). `-c` and `-s` are mutually exclusive; unknown flags fail loudly. (OpenCode 2 dropped the V1 `--fork` TUI flag — fork from within the TUI, or via `opencode run --fork` for automation.)
 
+**Plan mode (build it after you've planned it).** OpenCode ships a read-only **Plan** primary agent alongside **Build**. Press **Tab** / **Shift+Tab** in the TUI to cycle the primary agents — in Plan mode the agent explores the codebase and discusses the plan with you without editing your project files; when the plan looks right, Tab back to Build and ask it to implement. (The same switch exists for one-shot runs — see 5c / `ocs plan`.)
+
 ---
 
 ### 5c. One-shot with a prompt — `ocs run [name] <prompt>`
@@ -152,6 +154,16 @@ ocs run my-sandbox prompt.md -f context.md   # extra args pass through to `openc
 - A prompt file **inside** the workspace is read in place; a file **outside** is mounted into the container read-only for that run. An **inline** prompt is written to a temp file, mounted read-only for the run, and removed afterward.
 - The model is **always pinned** to the configured sandbox model — it cannot be switched in-session.
 - `webfetch` / `websearch` are denied by the OpenCode config; any web egress must also pass the Squid / iptables firewall.
+- **Plan mode:** `ocs run my-sandbox "plan this" --agent plan` (or use the dedicated door below) runs the session with OpenCode's read-only **Plan** agent — explore + plan, no edits to your project files.
+
+#### 5c+. Plan-mode one-shot — `ocs plan [name] <prompt>`
+
+Identical to 5c, pinned to the Plan agent (the 5b Tab-switch, for the one-shot door):
+
+```sh
+ocs plan my-sandbox "design a migration to SQLite"   # name + prompt
+ocs plan "draft an implementation plan"              # from inside a project
+```
 
 ---
 

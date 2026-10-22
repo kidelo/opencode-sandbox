@@ -10,8 +10,10 @@
     }
   },
 
-  // V2: top-level `subagent_depth` moved under `experimental`; `todo` (the
-  // V1 `permission.todowrite`) is an experimental feature in V2 — enable it.
+  // V2: top-level `subagent_depth` moved under `experimental`; `todo` enables
+  // the V1-era `todowrite` tool (dropped from the default tool set in V2 —
+  // off by default). Verified on 2.1.2: with this key the model can call
+  // `todowrite` and the TUI renders the task list.
   "experimental": {
     "subagent_depth": 2,
     "todo": true

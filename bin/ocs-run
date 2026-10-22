@@ -37,7 +37,7 @@ usage: ocs-run <prompt> [extra opencode-run args...]
     a temp file and mounted read-only for this run
 
 Extra args are passed through to 'opencode run' (e.g. -f other.md,
---format json).
+--format json, --agent plan).
 EOF
   [[ -z "${1:-}" ]] && exit 1
   exit 0

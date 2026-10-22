@@ -45,7 +45,7 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 - [Project setup](#project-setup)
 - [Commands](#commands)
   - [`ocs init`](#ocs-init-name) · [`ocs rebuild`](#ocs-rebuild-name) · [`ocs start`](#ocs-start-name) · [`ocs web`](#ocs-web-name) · [`ocs web-auth`](#ocs-web-auth-name)
-   - [`ocs terminal`](#ocs-terminal-name) · [`ocs tui`](#ocs-tui-name-resume-flags) · [`ocs run`](#ocs-run-name-prompt) · [`ocs test`](#ocs-test-name)
+   - [`ocs terminal`](#ocs-terminal-name) · [`ocs tui`](#ocs-tui-name-resume-flags) · [`ocs run`](#ocs-run-name-prompt) · [`ocs plan`](#ocs-plan-name-prompt) · [`ocs test`](#ocs-test-name)
   - [`ocs clean`](#ocs-clean-name) · [`ocs kill`](#ocs-kill) · [`ocs list`](#ocs-list) · [`ocs status`](#ocs-status-name) · [`ocs logs`](#ocs-logs-name-flags)
 - [Container lifecycle](#container-lifecycle)
 - [Network isolation](#network-isolation)
@@ -126,7 +126,7 @@ New sandbox projects are **gitignored** by default — they are local to your ch
 
 All functionality is exposed through the single `ocs` command — `ocs <command> <project>` (see `ocs help`). You address sandboxes **by name**, so you never need to `cd` into a project. The `bin/ocs-*` files under the hood are the individual implementations that `ocs` dispatches to; they are not part of the user interface (only the repository root is on your `PATH`, so just `ocs` is reachable).
 
-Most commands take the project **name** as their first argument (e.g. `ocs start my-sandbox`). A few don't: `ocs init <name>` (creates the project), `ocs list`, `ocs status`, and `ocs kill`. `ocs run` and `ocs logs` are special: their first argument is a *name* only when it is a known project — otherwise it is a flag (or the prompt, for `ocs run`) and the project is resolved from the current directory (see `ocs run` / `ocs logs`).
+Most commands take the project **name** as their first argument (e.g. `ocs start my-sandbox`). A few don't: `ocs init <name>` (creates the project), `ocs list`, `ocs status`, and `ocs kill`. `ocs run`, `ocs plan`, and `ocs logs` are special: their first argument is a *name* only when it is a known project — otherwise it is a flag (or the prompt, for `ocs run` / `ocs plan`) and the project is resolved from the current directory (see `ocs run` / `ocs logs`).
 
 ### `ocs init <name>`
 
@@ -230,6 +230,17 @@ ocs run my-sandbox prompt.md -f context.md   # extra args pass through to `openc
 - `webfetch`/`websearch` are **denied by default** by the opencode config; all web egress additionally has to pass the Squid/iptables firewall.
 - A prompt file **inside** the workspace is read in place; a file **outside** is mounted into the container read-only for that run. An **inline** prompt is written to a temp file, mounted read-only for the run, and removed afterward.
 - The session's exit code is propagated to the shell.
+
+### `ocs plan [name] <prompt>`
+
+**Plan mode** — the same one-shot mechanics as `ocs run`, pinned to OpenCode's built-in **`plan` agent**: a primary, read-only agent that explores the codebase and discusses a plan with you *without editing your project files*.
+
+```sh
+ocs plan my-sandbox "design a migration to SQLite"   # name + prompt
+ocs plan "draft an implementation plan"              # from inside a project
+```
+
+Everything else about `ocs run` applies (model pin, prompt file vs inline, exit code, `timeout:` policy). In the interactive TUI (`ocs tui`) you get the same switch live: **Tab** / **Shift+Tab** cycles the primary agents (Build ↔ Plan) — plan first, review the proposal, switch back to Build, and let it implement. `ocs run` also accepts `--agent plan` directly (`ocs run my-sandbox "plan this" --agent plan`).
 
 ### `ocs test <name>`
 
