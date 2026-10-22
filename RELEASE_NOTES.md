@@ -27,9 +27,11 @@ seeding into each project's workspace.
   `opencode run`). The Plan agent explores the codebase and discusses a plan
   with you **without editing normal project files** (edits are denied; only
   `~/.opencode/plan/*` is writable)
-- **Plan mode in the TUI** — **Tab** / **Shift+Tab** cycles the primary
-  agents live (Build ↔ Plan); switching Plan→Build injects a `build-switch`
-  system reminder. Plan first, review, Tab back to Build, implement
+- **Plan mode in the TUI** — **Shift+Tab** (OpenCode 2's built-in agent
+  switch; Tab keeps its input-autocomplete job) cycles the primary agents
+  live (Build → Plan → Build, verified in the real TUI); switching
+  Plan→Build injects a `build-switch` system reminder. Plan first,
+  review, Shift+Tab back to Build, implement
 - **`ocs run --agent <id>`** — extra args already pass through to
   `opencode run`; the Plan agent is now a documented first-class example
   (`ocs run <name> "plan this" --agent plan`)
@@ -53,7 +55,7 @@ seeding into each project's workspace.
     seeding via `seed_workspace_opencode()` in `bin/shared`, called from
     `build_run_flags` (every door), so no rebuild is ever needed for it
 - **Docs** — README (new `ocs plan` section + door list + "Custom agents &
-  skills" section), HOWTO (5b Tab switching, 5c `--agent plan` + 5c+
+  skills" section), HOWTO (5b Shift+Tab switching, 5c `--agent plan` + 5c+
   `ocs plan`, **new §8 "Custom agents and skills"** with the location
   table, defaults, and your-own examples; Hooks/Daily/Troubleshooting
   renumbered 9/10/11), AGENTS.md (door surface + seeding contract),
@@ -82,6 +84,12 @@ template (v0.5 upgrade steps) to pick up the `experimental.todo` enablement.
   limits)
 - **CLI-level:** `opencode run --standalone -m <model> --agent plan "…"` — the
   exact command form the door produces, verified cold
+- **TUI live switch (via `ocs tui`):** a PTY-driven session through the full
+  door stack, header read after each keystroke — start: `Build ·
+  Qwen3.8 27B Ollama`, after one **Shift+Tab**: `Plan · Qwen3.8 27B
+  Ollama`, after a second: back to `Build …`. Confirms the stock
+  2.1.2 default keybind (`agent.cycle` = `shift+tab`,
+  `agent.cycle.reverse` unbound) in the real TUI
 - **todo live probe (2.1.2 server API):** assistant `todowrite` tool call
   `status=completed` (two-item todo list); V2's plan switch confirmed via
   `session.switchAgent` (HTTP 204) + the synthetic "You are in Plan mode"
@@ -272,7 +280,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.6** | **Plan-mode door (`ocs plan`)** + TUI Tab agent switching documented + `todo` tool verified on 2.1.2 | `RELEASE_V0.6-KIDELO` (planned) |
+| **v0.6** | **Plan-mode door (`ocs plan`)** + TUI Shift+Tab agent switching (verified live) + custom agents/skills (defaults + first-run seed) + `todo` tool verified on 2.1.2 | `RELEASE_V0.6-KIDELO` (planned) |
 | v0.5 | **OpenCode 1.x → 2.1.x migration** (doors, entrypoint auth, config shape, base, `TEST_API` 7) | `RELEASE_V0.5-KIDELO` (published) |
 | v0.4 | Extra hardening (seccomp / landlock / egress-audit / sensitive-paths / git-hook sink / squid rebinding) + test cases 24–29 | — (local) |
 | v0.3 | Per-project policy knobs + read-only rootfs / sized tmpfs / IPv6-off | — (local) |

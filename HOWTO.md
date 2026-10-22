@@ -135,7 +135,7 @@ ocs tui my-sandbox -s ses_…      # continue a specific session by id
 
 You can also omit the name when you are inside the project: `ocs tui -c` (the project is resolved from the current directory). `-c` and `-s` are mutually exclusive; unknown flags fail loudly. (OpenCode 2 dropped the V1 `--fork` TUI flag — fork from within the TUI, or via `opencode run --fork` for automation.)
 
-**Plan mode (build it after you've planned it).** OpenCode ships a read-only **Plan** primary agent alongside **Build**. Press **Tab** / **Shift+Tab** in the TUI to cycle the primary agents — in Plan mode the agent explores the codebase and discusses the plan with you without editing your project files; when the plan looks right, Tab back to Build and ask it to implement. (The same switch exists for one-shot runs — see 5c / `ocs plan`.)
+**Plan mode (build it after you've planned it).** OpenCode ships a read-only **Plan** primary agent alongside **Build**. Press **Shift+Tab** in the TUI to cycle the primary agents (the built-in OpenCode 2 default — Tab stays with its input-field autocomplete job) — in Plan mode the agent explores the codebase and discusses the plan with you without editing your project files; when the plan looks right, Shift+Tab back to Build and ask it to implement. (The same switch exists for one-shot runs — see 5c / `ocs plan`.) Prefer **Tab** yourself? Remap it in your TUI settings: `{"keybinds": {"agent_cycle": "tab,shift+tab"}}` in `~/.config/opencode/tui.json`.
 
 ---
 
@@ -158,7 +158,7 @@ ocs run my-sandbox prompt.md -f context.md   # extra args pass through to `openc
 
 #### 5c+. Plan-mode one-shot — `ocs plan [name] <prompt>`
 
-Identical to 5c, pinned to the Plan agent (the 5b Tab-switch, for the one-shot door):
+Identical to 5c, pinned to the Plan agent (the 5b Shift+Tab-switch, for the one-shot door):
 
 ```sh
 ocs plan my-sandbox "design a migration to SQLite"   # name + prompt
@@ -330,10 +330,10 @@ Notes:
 
 - **IDs** are the filename (flat) or directory name (folder form), kebab-case — that's what the model loads with the `skill` tool (`{"id": "release-notes"}`).
 - **`description` in the frontmatter is what the model sees** — write it for the model, not for humans ("Use for …" beats "A tool for …").
-- **`mode: subagent`** agents can be delegated to via the `subagent` tool; `mode: primary` agents can be picked directly in the TUI (Tab-cycle) and via `ocs run <name> "…" --agent <id>`.
+- **`mode: subagent`** agents can be delegated to via the `subagent` tool; `mode: primary` agents can be picked directly in the TUI (Shift+Tab-cycle, the built-in agent switch) and via `ocs run <name> "…" --agent <id>`.
 - **Permissions**: per-agent `permissions:` in the frontmatter (see the built `plan` agent — read-only by default) or globally in `opencode.jsonc`. The action list includes `skill` (lock a skill to an agent) and `external_directory` (stop reads outside the workspace).
 - **`default_agent`** in `opencode.jsonc` (`"default_agent": "plan"`) changes which primary agent starts a `ocs run` session.
-- **Built-in agents** you can already use: `build` (default, full tools), `plan` (read-only planning — see [Section 5b](#5b-plan-a-readonly-plan-mode) above), plus subagents `general` and `explore`.
+- **Built-in agents** you can already use: `build` (default, full tools), `plan` (read-only planning — see the Plan-mode note in Section 5b above), plus subagents `general` and `explore`.
 - No sandbox rebuild is needed for any of this — agents/skills are live files in the workspace; the sandbox just seeds the defaults and mounts the dir.
 
 ---

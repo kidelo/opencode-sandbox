@@ -240,7 +240,7 @@ ocs plan my-sandbox "design a migration to SQLite"   # name + prompt
 ocs plan "draft an implementation plan"              # from inside a project
 ```
 
-Everything else about `ocs run` applies (model pin, prompt file vs inline, exit code, `timeout:` policy). In the interactive TUI (`ocs tui`) you get the same switch live: **Tab** / **Shift+Tab** cycles the primary agents (Build ↔ Plan) — plan first, review the proposal, switch back to Build, and let it implement. `ocs run` also accepts `--agent plan` directly (`ocs run my-sandbox "plan this" --agent plan`).
+Everything else about `ocs run` applies (model pin, prompt file vs inline, exit code, `timeout:` policy). In the interactive TUI (`ocs tui`) you get the same switch live: **Shift+Tab** cycles the primary agents (Build → Plan → Build, the built-in OpenCode 2 default — remap it to Tab via the TUI settings, `{"keybinds": {"agent_cycle": "tab"}}` in `~/.config/opencode/tui.json`) — plan first, review the proposal, switch back to Build, and let it implement. `ocs run` also accepts `--agent plan` directly (`ocs run my-sandbox "plan this" --agent plan`).
 
 ### `ocs test <name>`
 
@@ -569,7 +569,7 @@ Four optional top-level keys add **defense-in-depth** on top of the per-project 
 
 OpenCode 2's custom agents and skills are **project-scoped files** — in the sandbox they live in the workspace (`/workspace` in the container), so they persist per project without any image change:
 
-- **Agents**: `<workspace>/.opencode/agents/<name>.md` (frontmatter: `description`, `mode: subagent|primary`, optional `permissions:`, body = system prompt). `primary` agents are picked in the TUI (Tab-cycle) and via `ocs run … --agent <id>`; `subagent` agents are delegated to via the `subagent` tool. Built-ins: `build` (default), `plan` (read-only), plus the `general` / `explore` subagents.
+- **Agents**: `<workspace>/.opencode/agents/<name>.md` (frontmatter: `description`, `mode: subagent|primary`, optional `permissions:`, body = system prompt). `primary` agents are picked in the TUI (Shift+Tab-cycle) and via `ocs run … --agent <id>`; `subagent` agents are delegated to via the `subagent` tool. Built-ins: `build` (default), `plan` (read-only), plus the `general` / `explore` subagents.
 - **Skills**: `<workspace>/.opencode/skills/<id>.md` (flat, ID = filename) or `<id>/SKILL.md` (directory form). The frontmatter's `description` is what the model sees. Load with the `skill` tool (`{"id": "…"}`) or `@id` in a prompt.
 - **Defaults (first-run seed).** The first door run of any project seeds a small default set from the repo templates (`config/default-agents/`, `config/default-skills/` — the single source) into `<workspace>/.opencode/`: a read-only **`reviewer`** subagent (`edit` + `shell` denied) and a **`todo-workflow`** skill (multi-step discipline via the `todowrite` tool). Host-side, idempotent, once — after that the dir is yours: edit or delete freely, or delete the dir to get the defaults back on next run.
 - **Config knobs.** `default_agent` in `opencode.jsonc` (which `primary` agent starts a run); `permissions:` actions include `skill` (lock a skill to an agent) and `external_directory` (stop reads outside the workspace).
