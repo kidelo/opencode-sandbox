@@ -44,6 +44,15 @@ After changing `config/Dockerfile.<profile>`, `docker/entrypoint.sh`, or `bin/*`
 
 > **Self-hosted repo:** for this repository's own sandbox (which has its own `config/opencode-sandbox-config.yaml`), the `ocs` project-name argument can be **omitted** when the current directory is inside the project — `ocs` then resolves the project from the current directory (e.g. `ocs rebuild`, `ocs test` from the repo root).
 
+## Release notes (RELEASE_NOTES.md)
+
+`RELEASE_NOTES.md` at the repo root is the **living release document** — the single source for release content.
+
+- **Update it on every push**: each push ships a new (or revised) "newest release" section **on top** (one section per release: Highlights, Upgrade steps, Breaking changes, Verification, Release metadata). Previous releases keep their sections below; the "Release history" table at the bottom stays in sync
+- When publishing on GitHub: paste the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO` (tag scheme and last-published state are noted in the file header)
+- The release *number* is the fork's own sequence (v0.1, v0.2, … — see the commit subjects, e.g. "ocs: v0.4 extra-hardening"), independent of any upstream version
+- Every user-visible change that lands in a push (new commands, changed flags, new config keys, renamed env vars, suite-count changes) must therefore show up in the newest section *before* the push — the file is part of the push, not an afterthought
+
 ## Conventions
 
 - **Single entry point:** the root script `ocs` is the user-facing command and dispatches to `bin/ocs-*` (see its `case` list). New subcommands = add a `case` arm in `ocs` + a `bin/ocs-*` implementation (or reuse an existing one). Keep user-facing messages referring to `ocs <subcommand>`, not `bin/ocs-*` paths. **Current surface (keep in sync with `ocs help`):** `init <name> [-y] [-p|--dockerfile <p>] [--no-build]`, `rebuild`, `start`, `tui` (optional name; **`-c`/`--continue`, `-s`/`--session <id>`** resume an aborted session — name resolved from CWD when absent, like `run`; OpenCode 2 dropped the V1 `--fork` TUI flag), `run` (prompt **file or inline string**; first arg is the *name* only when it is a known project, otherwise the *prompt* and the project is resolved from CWD), `web`, `web-auth`, `terminal`, `test`, `list`, `status` (optional name; lists sandbox *containers* on the host — the container counterpart to `ocs list`), `logs` (optional name + `docker logs` flags; reads the project's existing container log, no name required when run from a project like `run`), `clean` (alias `clear`), `kill`

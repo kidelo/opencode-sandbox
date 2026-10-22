@@ -17,7 +17,7 @@ OpenCode is a powerful AI coding assistant — but by default it runs on your ho
 - 🛡️ **Network isolation** — every sandbox gets its own dedicated Docker network and an internal firewall; egress is proxy- or firewall-restricted, and the container is dropped to a non-root user
 - 🧱 **DoS-hardened** — fixed limits on memory, CPU, process count, and maximum single-file size (`RLIMIT_FSIZE`) plus `no-new-privileges`, a **read-only rootfs with a sized tmpfs** for `/tmp` / `/run` / `/var/tmp` / `$HOME` (so temp writes are memory-bounded, never host-disk-backed), and **IPv6 disabled** inside the namespace — one sandbox can never take down or persistently alter the host
 - 🧲 **DNS-tunnel blocked** — the agent cannot use the resolver `127.0.0.11:53` as an exfil/C2 channel (uid-scoped drop by default; squid-uid and all IP-only endpoints unaffected — re-open only by explicit choice via `agent-dns: allow`)
-- 🧪 **Verified** — a built-in 21-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress, resource limits active, two running containers cannot see each other, and the DNS-tunnel gate is in the configured state — **all blocked/verified**
+- 🧪 **Verified** — a built-in 29-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress, resource limits active, two running containers cannot see each other, and the DNS-tunnel gate is in the configured state — **all blocked/verified**
 
 **Quick start**
 
@@ -738,3 +738,5 @@ The Apache-2.0 `LICENSE` file is the governing license for this repository and a
 ## Remarks
 
 OpenCode Sandbox is not built by the OpenCode team and is not affiliated with OpenCode.
+
+**Release history:** see [RELEASE_NOTES.md](RELEASE_NOTES.md) — the living release document (updated on every push; newest release on top).
