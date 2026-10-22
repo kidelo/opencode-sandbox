@@ -565,6 +565,17 @@ Four optional top-level keys add **defense-in-depth** on top of the per-project 
 - Test cases **24** (auto-exec paths ro-pinned) and **25** (in-commit git hooks neutralized) are the H1 (auto-exec file planting) defence-in-depth.
 - The `core.hooksPath` neutralization (case **25**) is baked into the *base* image (`base.Dockerfile` does `RUN git config --system core.hooksPath /dev/null`) so every profile gets it; it only affects the in-container git, never the host's. `OCS_BASE_API` is bumped when this layer is added (a stale cached base is re-baked).
 
+### Custom agents & skills (OpenCode 2)
+
+OpenCode 2's custom agents and skills are **project-scoped files** — in the sandbox they live in the workspace (`/workspace` in the container), so they persist per project without any image change:
+
+- **Agents**: `<workspace>/.opencode/agents/<name>.md` (frontmatter: `description`, `mode: subagent|primary`, optional `permissions:`, body = system prompt). `primary` agents are picked in the TUI (Tab-cycle) and via `ocs run … --agent <id>`; `subagent` agents are delegated to via the `subagent` tool. Built-ins: `build` (default), `plan` (read-only), plus the `general` / `explore` subagents.
+- **Skills**: `<workspace>/.opencode/skills/<id>.md` (flat, ID = filename) or `<id>/SKILL.md` (directory form). The frontmatter's `description` is what the model sees. Load with the `skill` tool (`{"id": "…"}`) or `@id` in a prompt.
+- **Defaults (first-run seed).** The first door run of any project seeds a small default set from the repo templates (`config/default-agents/`, `config/default-skills/` — the single source) into `<workspace>/.opencode/`: a read-only **`reviewer`** subagent (`edit` + `shell` denied) and a **`todo-workflow`** skill (multi-step discipline via the `todowrite` tool). Host-side, idempotent, once — after that the dir is yours: edit or delete freely, or delete the dir to get the defaults back on next run.
+- **Config knobs.** `default_agent` in `opencode.jsonc` (which `primary` agent starts a run); `permissions:` actions include `skill` (lock a skill to an agent) and `external_directory` (stop reads outside the workspace).
+
+No rebuild is needed to add agents/skills — they are live workspace files. Details: HOWTO §8.
+
 ---
 
 ## Hooks

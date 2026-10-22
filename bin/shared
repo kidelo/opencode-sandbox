@@ -507,6 +507,40 @@ to_bytes() {
   esac
 }
 
+# seed_workspace_opencode <workspace-dir>
+# ---------------------------------------
+# Copies the default OpenCode 2 custom agents and skills (templates in the
+# repo's config/default-agents/ and config/default-skills/ — the single
+# source) into the project workspace's <workspace>/.opencode/{agents,skills}
+# so the container's opencode can discover them (<workspace>/.opencode is
+# the project scope, per the OpenCode docs; the workspace is the container's
+# CWD and the only persistent rw dir). Best-effort and first-run-only:
+# once a target dir exists it is owned by the user (edit/delete/extend
+# freely); deleting the dir drops back to the defaults on next run. Host-side
+# — no image rebuild required. Never fails the caller.
+seed_workspace_opencode() {
+  local ws="${1:-}"
+  [[ -n "${ws}" && -d "${ws}" ]] || return 0
+
+  local template_pairs=(
+    "${SANDBOX_HOME}/config/default-agents:agents"
+    "${SANDBOX_HOME}/config/default-skills:skills"
+  )
+  local pair src dst f
+  for pair in "${template_pairs[@]}"; do
+    src="${pair%%:*}"
+    dst="${ws}/.opencode/${pair##*:}"
+    [[ -d "${src}" ]] || continue
+    [[ -d "${dst}" ]] && continue
+    mkdir -p "${dst}" 2>/dev/null || continue
+    for f in "${src}"/*; do
+      [[ -f "${f}" ]] || continue
+      cp -f "${f}" "${dst}/" 2>/dev/null || true
+    done
+  done
+  return 0
+}
+
 # Build the docker-run flag array for the sandbox: caps, resource limits,
 # workspace mount (the single user rw dir), opencode state (ro? no — rw
 # persistent), the read-only opencode.jsonc, env-passthrough (via a 0600
@@ -608,6 +642,10 @@ build_run_flags() {
   RUN_FLAGS+=(--sysctl "net.ipv6.conf.all.disable_ipv6=1")
   RUN_FLAGS+=(--sysctl "net.ipv6.conf.default.disable_ipv6=1")
   RUN_LOG+=("    rootfs   (ro): read-only overlay + sized tmpfs (/tmp /run /var/tmp /home/dev + /home/dev/.local, mode=1777); IPv6 disabled in-namespace")
+
+  # Seed the default OpenCode agents/skills into the workspace (first run
+  # only; idempotent) so /workspace/.opencode exists inside the container.
+  seed_workspace_opencode "${SANDBOX_WORKSPACE_DIR}"
 
   # The single user read-write dir, at a fixed in-container path.
   RUN_FLAGS+=(-v "${SANDBOX_WORKSPACE_DIR}:/workspace")

@@ -12,11 +12,13 @@ release tags.
 
 ---
 
-## v0.6 — plan-mode door + todo tool verified *(this push)*
+## v0.6 — plan mode, custom agents & skills, todo verified *(this push)*
 
 OpenCode 2's built-in **Plan** agent (a read-only primary agent) is now
-first-class in every door, and the **todo** tool — which V2 drops from the
-default toolset — is verified *on* and working.
+first-class in every door, the **todo** tool — which V2 drops from the
+default toolset — is verified *on* and working, and **custom agents and
+skills** (an OpenCode 2 flagship) ship as bundled defaults with first-run
+seeding into each project's workspace.
 
 ### Highlights
 
@@ -36,8 +38,25 @@ default toolset — is verified *on* and working.
   (already in the shipped `config/opencode.jsonc`; comment updated to
   "verified"). Proven live: the model called `todowrite` (a two-item list)
   with `status=completed`; the TUI renders the task list
-- **Docs** — README (new `ocs plan` section + door list), HOWTO (5b Tab
-  switching, 5c `--agent plan` + 5c+ `ocs plan`), AGENTS.md (door surface),
+- **Custom agents + skills (new)** — OpenCode 2's agent/skill system is
+  adopted project-scoped: agents/skills live in `<workspace>/.opencode/`
+  (the persistent rw dir; container CWD is `/workspace`, so OpenCode
+  discovers them without any image change). Two bundled defaults are seeded
+  on the **first door run** of every project (host-side, idempotent,
+  first-run-only — after that the files are yours; delete the dir to get
+  the defaults back):
+  - **`reviewer`** — a `subagent`, read-only by construction (`edit` +
+    `shell` both denied in its frontmatter), used for code review
+  - **`todo-workflow`** — a skill teaching the multi-step discipline:
+    `todowrite` list (pending → in_progress → completed) for longer tasks
+  - Single source: `config/default-agents/` + `config/default-skills/`;
+    seeding via `seed_workspace_opencode()` in `bin/shared`, called from
+    `build_run_flags` (every door), so no rebuild is ever needed for it
+- **Docs** — README (new `ocs plan` section + door list + "Custom agents &
+  skills" section), HOWTO (5b Tab switching, 5c `--agent plan` + 5c+
+  `ocs plan`, **new §8 "Custom agents and skills"** with the location
+  table, defaults, and your-own examples; Hooks/Daily/Troubleshooting
+  renumbered 9/10/11), AGENTS.md (door surface + seeding contract),
   `ocs` help / `ocs-run` usage
 
 ### Breaking changes
@@ -46,7 +65,10 @@ None — purely additive (one new door; no flag/config changes).
 
 ### Upgrade steps
 
-None — `ocs plan` is host-side dispatcher logic (no rebuild required).
+None — `ocs plan` and the agent/skill seeding are both host-side (no
+rebuild required). The first door run of an existing project seeds
+`<workspace>/.opencode/{agents,skills}` once (reviewer subagent +
+todo-workflow skill) — skip the check if you already have that dir.
 Projects whose `config/opencode.jsonc` predates v0.5 should take the repo
 template (v0.5 upgrade steps) to pick up the `experimental.todo` enablement.
 
@@ -64,6 +86,14 @@ template (v0.5 upgrade steps) to pick up the `experimental.todo` enablement.
   `status=completed` (two-item todo list); V2's plan switch confirmed via
   `session.switchAgent` (HTTP 204) + the synthetic "You are in Plan mode"
   system message
+- **Agents/skills E2E through the sandbox:** first door run seeded
+  `sandboxes/20o/workspace/.opencode/{agents,skills}/{reviewer.md,
+  todo-workflow.md}`; `ocs run 20o "…load the skill with id 'todo-
+  workflow'… reply SKILL-OK"` → skill loaded (transcript shows
+  `→ Skill "Multi-step todo workflow"`) → `SKILL-OK`, rc=0;
+  `ocs run 20o "…ask the 'reviewer' subagent … reply REVIEWER-OK"` →
+  delegation to the reviewer subagent (transcript shows the reviewer
+  subagent call) → `REVIEWER-OK`, rc=0
 - `shellcheck` clean across `ocs bin/* bin/shared docker/entrypoint.sh`
 
 ### Release metadata (v0.6)
@@ -71,8 +101,11 @@ template (v0.5 upgrade steps) to pick up the `experimental.todo` enablement.
 - **Tag (planned):** `RELEASE_V0.6-KIDELO`
 - **Base:** `aa9800e` (v0.5 docs)
 - **Commits in range:** `ocs` (new `plan` case arm + usage + header),
-  `bin/ocs-run` (usage example), `README.md`, `HOWTO.md`, `AGENTS.md`,
-  `config/opencode.jsonc` (todo comment, verified)
+  `bin/ocs-run` (usage example), `bin/shared` (`seed_workspace_opencode()`
+  + call in `build_run_flags`), `config/default-agents/reviewer.md` +
+  `config/default-skills/todo-workflow.md` (bundled defaults, single
+  source), `README.md`, `HOWTO.md`, `AGENTS.md`, `config/opencode.jsonc`
+  (todo comment, verified)
 
 ---
 

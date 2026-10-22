@@ -280,7 +280,65 @@ sensitive-paths:                # extra workspace sub-paths to pin READ-ONLY (ad
 
 ---
 
-## 8. Hooks
+## 8. Custom agents and skills (OpenCode 2)
+
+OpenCode 2 supports **custom agents** (named, purpose-specific assistants) and **skills** (reusable how-to documents the model loads on demand). In the sandbox they live **project-scoped** in your workspace:
+
+| What | Location (host) | Location (container) |
+|---|---|---|
+| Agents | `<workspace>/.opencode/agents/<name>.md` | `/workspace/.opencode/agents/` |
+| Skills | `<workspace>/.opencode/skills/<id>.md` (flat) or `<id>/SKILL.md` | `/workspace/.opencode/skills/` |
+
+The workspace is the persistent rw dir, so anything you add here survives across runs. OpenCode discovers them automatically — the model sees the agent catalog (subagents) and the skill descriptions, and loads a skill with the `skill` tool or by writing `@skill-id` in your prompt.
+
+### 8.1 What ships by default
+
+On the first run of a door (start / tui / run / test) the sandbox seeds a small default set into `<workspace>/.opencode/` — one time, host-side, no rebuild needed:
+
+- **`reviewer`** (subagent, read-only by construction — `edit` and `shell` are denied): code review. Use it via `subagent_type: "reviewer"`, or just ask the main agent to "review the changes".
+- **`todo-workflow`** (skill): a todo-list discipline for multi-step work — create a list with the `todowrite` tool, work through it, and keep it updated. Load it with `@todo-workflow` or the `skill` tool, id `todo-workflow`.
+
+Once seeded, the dir is **yours**: edit or delete the files freely. Want the defaults back? Delete `<workspace>/.opencode/agents` (or `…/skills`) and the next door run re-seeds it.
+
+### 8.2 Adding your own
+
+**Agent** — `<workspace>/.opencode/agents/summarizer.md`:
+
+```markdown
+---
+description: Summarises any file or change into a tight digest
+mode: subagent
+---
+
+You are a summariser. Return 5 bullets: what it does, what changed, why,
+risky bits, follow-ups. Be specific (files, lines, identifiers).
+```
+
+**Skill** — `<workspace>/.opencode/skills/release-notes.md` (flat form, single file):
+
+```markdown
+---
+name: Release notes
+description: How to write the project's CHANGELOG entries - load it when asked to prepare a release
+---
+
+Write release notes as: ## vX.Y.Z, then ### Added / ### Changed / ### Fixed
+with one line per item and a concrete reference (flag, file, issue).
+```
+
+Notes:
+
+- **IDs** are the filename (flat) or directory name (folder form), kebab-case — that's what the model loads with the `skill` tool (`{"id": "release-notes"}`).
+- **`description` in the frontmatter is what the model sees** — write it for the model, not for humans ("Use for …" beats "A tool for …").
+- **`mode: subagent`** agents can be delegated to via the `subagent` tool; `mode: primary` agents can be picked directly in the TUI (Tab-cycle) and via `ocs run <name> "…" --agent <id>`.
+- **Permissions**: per-agent `permissions:` in the frontmatter (see the built `plan` agent — read-only by default) or globally in `opencode.jsonc`. The action list includes `skill` (lock a skill to an agent) and `external_directory` (stop reads outside the workspace).
+- **`default_agent`** in `opencode.jsonc` (`"default_agent": "plan"`) changes which primary agent starts a `ocs run` session.
+- **Built-in agents** you can already use: `build` (default, full tools), `plan` (read-only planning — see [Section 5b](#5b-plan-a-readonly-plan-mode) above), plus subagents `general` and `explore`.
+- No sandbox rebuild is needed for any of this — agents/skills are live files in the workspace; the sandbox just seeds the defaults and mounts the dir.
+
+---
+
+## 9. Hooks
 
 If `opencode-sandbox-pre-start-container.sh` exists in the project root, `ocs start` **sources** it (not executes) before starting the container. Use it to refresh short-lived credentials:
 
@@ -295,7 +353,7 @@ If it contains secrets, add it to `.gitignore`.
 
 ---
 
-## 9. Daily / maintenance commands
+## 10. Daily / maintenance commands
 
 | Situation | Command |
 |---|---|
@@ -316,7 +374,7 @@ If it contains secrets, add it to `.gitignore`.
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 - **"port is already allocated"** — two sandboxes are using the same `opencode-port`. Use different ports, or switch to the portless one-shot modes.
 - **Agent case SKIPs in `ocs test`** — the model endpoint (your Ollama `ip:port`) is not reachable from the container. Add it to `intranet-endpoints` in `config/opencode-sandbox-config.yaml` and rebuild.
