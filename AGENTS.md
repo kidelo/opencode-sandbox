@@ -49,6 +49,7 @@ After changing `config/Dockerfile.<profile>`, `docker/entrypoint.sh`, or `bin/*`
 `RELEASE_NOTES.md` at the repo root is the **living release document** — the single source for release content.
 
 - **Update it on every push**: each push ships a new (or revised) "newest release" section **on top** (one section per release: Highlights, Upgrade steps, Breaking changes, Verification, Release metadata). Previous releases keep their sections below; the "Release history" table at the bottom stays in sync
+- **Release-state bookkeeping, same commit as the push**: when a release goes out, set that release's metadata line to `**Tag (published):**` + date, flip its "Release history" table row to `(published)`, and refresh the file header's "Last published GitHub release(s)" line — do it *before* the push, not as an afterthought (a stale "last published" line is exactly the kind of thing a reviewer/user notices next time)
 - When publishing on GitHub: paste the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO` (tag scheme and last-published state are noted in the file header)
 - The release *number* is the fork's own sequence (v0.1, v0.2, … — see the commit subjects, e.g. "ocs: v0.4 extra-hardening"), independent of any upstream version
 - Every user-visible change that lands in a push (new commands, changed flags, new config keys, renamed env vars, suite-count changes) must therefore show up in the newest section *before* the push — the file is part of the push, not an afterthought

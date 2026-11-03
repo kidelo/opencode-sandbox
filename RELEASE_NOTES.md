@@ -6,7 +6,8 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub release: `RELEASE_V0.7-KIDELO` (2026-11-03).
+Last published GitHub releases: `RELEASE_V0.7.2-KIDELO` (2026-11-03) and
+`RELEASE_V0.7-KIDELO` (2026-11-03); v0.7.1 ships in the v0.7.2 push.
 Releases v0.2–v0.6 below are local milestones shipped in the repo without
 GitHub release tags.
 
@@ -117,8 +118,8 @@ None for users. `docker inspect` of any door now shows
   `bin/ocs-rebuild-container` (squid policy files 0644),
   `docker/entrypoint.sh` (comment), `AGENTS.md`, `README.md`,
   `RELEASE_NOTES.md`
-- **Next tag:** `RELEASE_V0.7.2-KIDELO` (when published; v0.7.1 can ship
-  with it or be tagged separately — both fix the same "squid dies at
+- **Tag (published):** `RELEASE_V0.7.2-KIDELO` (2026-11-03; v0.7.1 ships
+  in this push as commit `4d04452` — both fix the same "squid dies at
   start" report)
 
 ---
@@ -560,8 +561,8 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.7.2** | **squid under full hardening** — worker died under `cap-drop=ALL` + `no-new-privileges`; `CAP_DAC_OVERRIDE` added (bisected; CHOWN/FOWNER not sufficient) | `RELEASE_V0.7.2-KIDELO` (planned) |
-| v0.7.1 | squid startup fix — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | `RELEASE_V0.7.1-KIDELO` (planned; superseded in scope by v0.7.2) |
+| **v0.7.2** | **squid under full hardening** — worker died under `cap-drop=ALL` + `no-new-privileges`; `CAP_DAC_OVERRIDE` added (bisected; CHOWN/FOWNER not sufficient) | `RELEASE_V0.7.2-KIDELO` (published) |
+| v0.7.1 | squid startup fix — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | shipped in the v0.7.2 push (commit `4d04452`) |
 | v0.7 | **OpenCode 2.2.5 pin** (latest) + standalone-in-docker & last-session resume re-verified + `compaction.buffer: 20%` shipped + `/goal` & `/schedule` awareness | `RELEASE_V0.7-KIDELO` (published) |
 | v0.6 | Plan-mode door (`ocs plan`) + TUI Shift+Tab agent switching (verified live) + custom agents/skills (defaults + first-run seed) + `todo` tool verified on 2.1.2 | `RELEASE_V0.6-KIDELO` (planned) |
 | v0.5 | **OpenCode 1.x → 2.1.x migration** (doors, entrypoint auth, config shape, base, `TEST_API` 7) | `RELEASE_V0.5-KIDELO` (published) |
