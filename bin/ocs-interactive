@@ -170,6 +170,47 @@ detach_wait_session() {
   return 1
 }
 
+# --- pane / client environment (shared by attach and detach) --------------
+# TERM/COLORTERM are PASSED THROUGH from the caller's terminal (the door
+# runs in the user's shell, so these reflect the real client terminal),
+# with safe fallbacks.
+PANE_TERM="$(printf '%s' "${TERM:-xterm-256color}" | tr -d '[:space:]')"
+PANE_COLORTERM="$(printf '%s' "${COLORTERM:-truecolor}" | tr -d '[:space:]')"
+# LANG: the host's own UTF-8 locale (e.g. de_DE.UTF-8) — `ocs rebuild`
+# detects it, bakes it into the image (base.Dockerfile) AND writes it to
+# locale.txt; passing it to the pane explicitly also covers images that
+# predate the bake. C.UTF-8 (built into glibc) is the guaranteed fallback.
+PANE_LOCALE="C.UTF-8"
+if [[ -f "${OPENCODE_SANDBOX_DIR}/locale.txt" ]]; then
+  PANE_LOCALE="$(tr -d '[:space:]' < "${OPENCODE_SANDBOX_DIR}/locale.txt" 2>/dev/null || true)"
+fi
+[[ -n "${PANE_LOCALE}" ]] || PANE_LOCALE="C.UTF-8"
+# Pane environment the TUI needs (truecolour + UTF-8); every place a
+# session is (re)created uses exactly this set.
+TMUX_PANE_ENV="-e TERM=${PANE_TERM} -e COLORTERM=${PANE_COLORTERM} -e LANG=${PANE_LOCALE}"
+
+# Truecolour handshake: the TUI emits truecolour into the pane, but tmux
+# quantises that down to 16/256 colours unless the CLIENT is known to be
+# RGB-capable. The client (the `tmux attach` inside the container) does NOT
+# inherit the caller's env (docker exec forwards nothing), so without help it
+# sees no TERM at all (tmux falls back to 'xterm') and always quantises. The
+# fix has two halves, both below: hand the client its real TERM, and tell the
+# server that this terminal does RGB (terminal-features '<TERM>:RGB').
+#
+# Gate: only teach the server about terminals that are genuinely RGB-capable.
+# A bare 'xterm' (16-colour) has no Tc capability, so forcing RGB there would
+# garble the display; xterm-256color and friends (256-colour, Tc-capable) can
+# do RGB passthrough, so they get it.
+term_is_truecolor() {
+  case "${COLORTERM:-}" in
+    truecolor|TrueColor|TRUECOLOR|24bit|24-bit) return 0 ;;
+  esac
+  case "${PANE_TERM:-}" in
+    *256color|xterm-direct|alacritty|kitty|wezterm|foot*|rxvt-unicode*) return 0 ;;
+  esac
+  return 1
+}
+
 # --- attach / stop / status: need no build artifacts, only the container ---
 if [[ "${MODE}" == "attach" ]]; then
   if ! detach_container_running; then
@@ -182,6 +223,14 @@ if [[ "${MODE}" == "attach" ]]; then
     exit 1
   fi
   detach_wait_session || { echo "ocs tui: the tmux session is not up yet — retry in a moment." >&2; exit 1; }
+  if term_is_truecolor; then
+    # Teach the (possibly long-running) server about this terminal — idempotent
+    # append, so terminals attached from different shells are all covered.
+    "${CONTAINER_RUNTIME}" exec --user dev "${DETACH_NAME}" \
+      tmux set -as terminal-features "${PANE_TERM}:RGB" >/dev/null 2>&1 || true
+    exec "${CONTAINER_RUNTIME}" exec -i -t -e TERM="${PANE_TERM}" -e COLORTERM="${PANE_COLORTERM}" \
+      --user dev "${DETACH_NAME}" tmux attach-session -t "${TMUX_SESSION}"
+  fi
   exec "${CONTAINER_RUNTIME}" exec -i -t --user dev "${DETACH_NAME}" \
     tmux attach-session -t "${TMUX_SESSION}"
 fi
@@ -241,17 +290,43 @@ fi
 # detaches the tmux CLIENT, while the tmux SERVER (and with it the TUI, its
 # in-process server and any running agent work) keeps going. tmux comes from
 # the precompiled ocs-base image (every profile has it).
-# Color: tmux hands the pane TERM=screen by default, and opencode's UI
-# (openTUI) then falls back to a 16-colour profile (its panels/backgrounds
-# disappear). Giving the pane TERM=xterm-256color + COLORTERM=truecolor makes
-# it emit truecolour, which tmux 3.x passes straight through to a truecolour
-# client terminal (verified via tmux pipe-pane).
+# Color + locale: tmux hands the pane TERM=screen by default (and the
+# container has no LANG), so opencode's UI (openTUI) falls back to a
+# 16-colour profile (panels/backgrounds disappear) and UTF-8 input breaks
+# (e.g. 'ü' becomes '_'). Giving the pane TERM=xterm-256color +
+# COLORTERM=truecolor + LANG=C.UTF-8 (available on Debian without locale-gen)
+# makes it render in truecolour — which tmux 3.x passes through to a
+# truecolour client — and type UTF-8 correctly.
 if [[ "${MODE}" == "detach" ]]; then
   build_run_flags
-  OPCODE_CMD="tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -e TERM=xterm-256color -e COLORTERM=truecolor '${OC_TUI}'; sleep infinity"
+  # Make the server know the caller's terminal is truecolour (see
+  # term_is_truecolor above) so tmux passes the TUI's RGB output through
+  # instead of quantising it to 16/256 colours. Runs at server start (here)
+  # and on every attach (attach branch) — both are idempotent appends.
+  TMUX_RGB_SET=""
+  if term_is_truecolor; then
+    TMUX_RGB_SET="; tmux set -as terminal-features '${PANE_TERM}:RGB' 2>/dev/null || true"
+  fi
+  OPCODE_CMD="tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} ${TMUX_PANE_ENV} '${OC_TUI}'${TMUX_RGB_SET}; sleep infinity"
+  detach_start_session() {
+    # SC2086: unquoted on purpose — the env-flag list must word-split into
+    # separate `-e NAME=VALUE` tokens.
+    # shellcheck disable=SC2086
+    "${CONTAINER_RUNTIME}" exec --user dev "${DETACH_NAME}" \
+      tmux new-session -d -s "${TMUX_SESSION}" ${TMUX_PANE_ENV} "${OC_TUI}"
+    if term_is_truecolor; then
+      "${CONTAINER_RUNTIME}" exec --user dev "${DETACH_NAME}" \
+        tmux set -as terminal-features "${PANE_TERM}:RGB" >/dev/null 2>&1 || true
+    fi
+  }
 
   if detach_container_running; then
-    echo "Detached TUI is already running: ${DETACH_NAME}"
+    if detach_tmux_session_up; then
+      echo "Detached TUI is already running: ${DETACH_NAME}"
+    else
+      echo "Container ${DETACH_NAME} is running but its tmux session is gone — starting a new one ..."
+      detach_start_session
+    fi
   elif "${CONTAINER_RUNTIME}" inspect "${DETACH_NAME}" >/dev/null 2>&1; then
     echo "Restarting the stopped detached TUI container ${DETACH_NAME} ..."
     "${CONTAINER_RUNTIME}" start "${DETACH_NAME}" >/dev/null
