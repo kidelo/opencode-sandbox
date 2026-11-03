@@ -12,7 +12,119 @@ GitHub release tags.
 
 ---
 
-## v0.7.1 — squid startup fix *(this push)*
+## v0.7.2 — squid under full hardening *(this push)*
+
+**Bug fix: with a non-empty `http-domain-whitelist`, `ocs start` still died
+at container start under the full hardening flag set.** v0.7.1 fixed how
+squid is invoked; this fixes the capability set the doors run with.
+
+Symptom (the reported start error): the entrypoint brings squid up in
+daemon mode, the parent spawns the worker, the worker exits status 1 five
+times, the parent gives up and the container dies:
+
+```text
+squid[11]: Squid Parent: (squid-1) process 13 started
+squid[11]: Squid Parent: squid-1 process 13 exited with status 1
+… (×5)
+squid[11]: Exiting due to repeated, frequent failures
+```
+
+v0.7.1's smoke run did not hit this because it started squid with lighter
+flags (default caps + `NET_ADMIN`); the real doors add
+`--cap-drop=ALL` down to `{NET_ADMIN,SETUID,SETGID}`,
+`--security-opt=no-new-privileges:true`, and the read-only/tmpfs map —
+that combination is what kills the worker.
+
+### Root cause — bisected (Squid 5.7, Docker 29.9.2)
+
+Each variant was run in daemon mode with the *exact* door flag set
+(`no-new-privileges` on, read-only rootfs, sized tmpfs) + the caps listed:
+
+| Cap set (always on top of `NET_ADMIN,SETUID,SETGID`) | worker |
+|---|---|
+| v0.7 / v0.7.1 set | ❌ exits status 1, parent gives up |
+| + `CHOWN` | ❌ |
+| + `FOWNER` | ❌ |
+| + `CHOWN` + `FOWNER` | ❌ |
+| + **`DAC_OVERRIDE`** | ✅ starts, binds `127.0.0.1:3128` |
+| (unchanged set, `no-new-privileges` OFF) | ✅ |
+
+`CAP_DAC_OVERRIDE` is required **and** sufficient — it only ever acts for
+root, *before* the worker's `setuid(proxy)` (a real credential transition
+drops all caps with it), so the worker's and the agent's runtime
+permissions are unchanged. The baked `/etc/squid/squid.conf` /
+`squid-whitelist.txt` staying `root:root 0600` is *intentional* (the agent
+cannot read its own egress policy); their modes are not the trigger —
+world-readable copies were tested and still failed without the cap.
+
+### Highlights
+
+- `compute_cap_flags()` in `bin/shared` (single source):
+  `--cap-add DAC_OVERRIDE` added → bounding set is now
+  `{NET_ADMIN, SETUID, SETGID, DAC_OVERRIDE}` (CapBnd
+  `00000000000010c1`). `no-new-privileges` stays on, read-only rootfs
+  stays, nothing else widens
+- The `ocs test` harness doors (case-11 peer + the two positive-egress
+  listeners) hardcode the *old* cap set inline and crash-loop under a
+  non-empty `http-domain-whitelist` for the same reason (the entrypoint
+  starts squid in them too) — they now reuse the single-source
+  `CAP_FLAGS` (cases 15/16 regressed, case 11 passed for the wrong reason)
+- The in-image squid policy files are world-readable now
+  (`/etc/squid/squid.conf`, `/etc/squid/squid-whitelist.txt` 0644): they
+  are the agent's own egress *policy*, not a credential —
+  `/opencode-password` stays `0600`. The suite reads them as `dev`
+  (cases 04/20/27 previously failed with "Permission denied").
+  `TEST_API` bumped 7→8 so the cached `-test` image is re-baked
+- Doc sync: `AGENTS.md` (cap-set bullet + `/opencode-password` note +
+  policy-file mode note), `README.md` (cap row), `docker/entrypoint.sh` comment
+
+### Breaking changes
+
+None for users. `docker inspect` of any door now shows
+`CapBnd=00000000000010c1` instead of `00000000000010c0`.
+
+### Upgrade steps
+
+- `ocs rebuild` once, then restart whatever door you run. The cap-flag
+  change itself is assembled at `docker run` time (no rebuild needed for
+  it) — the rebuild re-bakes the world-readable squid policy files and
+  picks up v0.7.1's entrypoint fix. `ocs test` rebuilds its `-test`
+  image automatically (the TEST_API bump).
+
+### Verification
+
+### Verification
+
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+- ✅ `ocs rebuild` on Docker Engine 29.9.2 — build-context
+  `squid.conf`/`squid-whitelist.txt` now `0644`, image built from the
+  precompiled `ocs-base`/`ocs-base-full` (reused)
+- ✅ `ocs test` full suite: **28 passed, 0 failed, 1 skipped** — the
+  previously failing `15-intranet-endpoint`, `16-host-port` and
+  `27-squid-bypass` now pass (listener/peer doors start squid cleanly with
+  the new cap set; the in-image squid policy files are readable by `dev`);
+  `04-squid-deny` is a legitimate SKIP here — this project's
+  `http-domain-whitelist` whitelists `.example.com`, so serving it *is* the
+  configured policy (projects without that entry execute the deny path)
+- ✅ E2E door `ocs run` → model answered `OCS-OK` (green single run under
+  the full flag set incl. `DAC_OVERRIDE`)
+
+### Release metadata (v0.7.2)
+
+- **Base:** `4d04452` (v0.7.1)
+- **Commits in range:** `bin/shared` (cap set), `bin/ocs-test`
+  (single-source caps in peer/listeners + TEST_API 8),
+  `bin/ocs-rebuild-container` (squid policy files 0644),
+  `docker/entrypoint.sh` (comment), `AGENTS.md`, `README.md`,
+  `RELEASE_NOTES.md`
+- **Next tag:** `RELEASE_V0.7.2-KIDELO` (when published; v0.7.1 can ship
+  with it or be tagged separately — both fix the same "squid dies at
+  start" report)
+
+---
+
+## v0.7.1 — squid startup fix _(shipped; the full-hardening part it could not see
+is fixed in v0.7.2 above)_
 
 **Bug fix: squid was never starting in any project that uses a
 non-empty `http-domain-whitelist`.**
@@ -43,6 +155,11 @@ None — this only repairs a path that could not have worked before.
 
 ### Verification
 
+- **Scope note (superseded by v0.7.2):** the invocations below ran under a
+  *lighter* flag set (default caps + `NET_ADMIN`). Under the doors' full
+  hardening set (`--cap-drop=ALL` + `no-new-privileges` + read-only/tmpfs)
+  squid still failed to start — the cap-set half of the fix shipped in
+  v0.7.2 (`DAC_OVERRIDE`).
 - ✅ reproduced the bug on the v0.7 image: `squid -c …` → `FATAL:
   '-c': unrecognized option` (container would have failed at start)
 - ✅ rebuilt the project image with the fix (bases reused from cache)
@@ -53,6 +170,25 @@ None — this only repairs a path that could not have worked before.
 - ✅ through the live proxy as `dev`: whitelisted `example.com` →
   **200**; IP-literal `1.1.1.1` (rebinding-class attempt) → **403**
 - `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+
+### Notes (2026-11-03 incident — "docker dies with SETUID enabled")
+
+Audited on Docker Engine 29.9.2 (`containerd-snapshotter` backend) after a
+clean `ocs kill`:
+
+- **SETUID exonerated** — the cap set is intact under the new backend
+  (`--cap-drop=ALL --cap-add SETUID --cap-add SETGID` → measured CapBnd
+  `00000000000000c0`); the daemon never crashed (all dockerd stop/start
+  pairs in the journal are host reboots)
+- **The `500 invalid tmpfs option "64m"` failures** came from an *old
+  ocs client* (pre-v0.4 `bin/shared`) sending the bare
+  `--tmpfs /run:64m` short form, which Docker ≥ 29 rejects; the repo's
+  `size=64m` key syntax works on both old and new Docker
+  (`AGENTS.md`/`README.md` now document this)
+- **Reproduced clean**: bare `--tmpfs /run:64m` is rejected by
+  Docker 29.9.2, the repo's full flag set is accepted, 3× parallel
+  `docker run` (bridge *and* named sandbox network) all come Up, and the
+  `ocs kill` → `ocs rebuild` → door E2E path completes green
 
 ### Release metadata (v0.7.1)
 
@@ -424,7 +560,8 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.7.1** | **squid startup fix** — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | `RELEASE_V0.7.1-KIDELO` (planned) |
+| **v0.7.2** | **squid under full hardening** — worker died under `cap-drop=ALL` + `no-new-privileges`; `CAP_DAC_OVERRIDE` added (bisected; CHOWN/FOWNER not sufficient) | `RELEASE_V0.7.2-KIDELO` (planned) |
+| v0.7.1 | squid startup fix — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | `RELEASE_V0.7.1-KIDELO` (planned; superseded in scope by v0.7.2) |
 | v0.7 | **OpenCode 2.2.5 pin** (latest) + standalone-in-docker & last-session resume re-verified + `compaction.buffer: 20%` shipped + `/goal` & `/schedule` awareness | `RELEASE_V0.7-KIDELO` (published) |
 | v0.6 | Plan-mode door (`ocs plan`) + TUI Shift+Tab agent switching (verified live) + custom agents/skills (defaults + first-run seed) + `todo` tool verified on 2.1.2 | `RELEASE_V0.6-KIDELO` (planned) |
 | v0.5 | **OpenCode 1.x → 2.1.x migration** (doors, entrypoint auth, config shape, base, `TEST_API` 7) | `RELEASE_V0.5-KIDELO` (published) |

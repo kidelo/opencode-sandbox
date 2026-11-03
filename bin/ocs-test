@@ -72,8 +72,12 @@ EP_IP="${SUBNET_BASE%.0}.50"
 # sensitive-paths list — cases 24-29); v7 ships the OpenCode 1.x -> 2.1.x
 # migration (the entrypoint's role-split auth model + `opencode serve`, the
 # v2 base installer, and case 08's `opencode run --standalone`) so a stale
-# pre-migration cached test image is rebuilt against the new baked-in layers.
-TEST_API="7"
+# pre-migration cached test image is rebuilt against the new baked-in layers;
+# v8 re-bakes the in-image squid policy files as world-readable 0644
+# (cases 04/20/27 read them as dev; /opencode-password stays 0600) and the
+# peer/listener harness doors now use the single-source CAP_FLAGS, so a
+# non-empty whitelist no longer crash-loops them (cases 11/15/16).
+TEST_API="8"
 HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API}"
 
 # Rebuild only when the cached image is missing or was built before the
@@ -124,7 +128,7 @@ if "${CONTAINER_RUNTIME}" run -d --init \
   --network "${PEER_NET}" \
   --memory=1g --memory-swap=1g --cpus=1.0 --pids-limit=64 \
   --security-opt=no-new-privileges:true \
-  --cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID \
+  "${CAP_FLAGS[@]}" \
   -e "OPCODE_CMD=sleep infinity" \
   "${TEST_IMAGE}" >/dev/null 2>&1; then
   # Wait briefly for the entrypoint to reach the long sleep (or exit).
@@ -174,7 +178,7 @@ if "${CONTAINER_RUNTIME}" run -d --init \
   --ip "${EP_IP}" \
   --memory=1g --memory-swap=1g --cpus=1.0 --pids-limit=64 \
   --security-opt=no-new-privileges:true \
-  --cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID \
+  "${CAP_FLAGS[@]}" \
   -e "OPCODE_CMD=python3 /opt/ocs-test/listener.py ${HARNESS_EP_PORT} $((HARNESS_EP_PORT + 1))" \
   "${TEST_IMAGE}" >/dev/null 2>&1; then
   EP_LISTENER_UP=1
@@ -185,7 +189,7 @@ if "${CONTAINER_RUNTIME}" run -d --init \
   -p "$((HARNESS_HOST_PORT + 1)):$((HARNESS_HOST_PORT + 1))" \
   --memory=1g --memory-swap=1g --cpus=1.0 --pids-limit=64 \
   --security-opt=no-new-privileges:true \
-  --cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID \
+  "${CAP_FLAGS[@]}" \
   -e "OPCODE_CMD=python3 /opt/ocs-test/listener.py ${HARNESS_HOST_PORT} $((HARNESS_HOST_PORT + 1))" \
   "${TEST_IMAGE}" >/dev/null 2>&1; then
   HOST_LISTENER_UP=1

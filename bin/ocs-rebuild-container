@@ -380,6 +380,12 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     done
   done < "${INTRANET_ENDPOINTS}"
 
+  # squid config + whitelist = the agent's own egress POLICY (not a secret —
+  # /opencode-password stays 0600 in the image). Make them world-readable
+  # (0644): docker COPY preserves build-context mode bits, and the suite
+  # (running as dev) asserts on their contents — cases 04/20/27. Host-side
+  # the build dir is 0700, so exposure stays owner-only.
+  chmod u=rw,go=r "${OPENCODE_SANDBOX_DIR}/squid.conf" "${SQUID_WHITELIST}"
   echo "  Extracted $(wc -l < "${SQUID_WHITELIST}") whitelisted domain(s) into squid-whitelist.txt"
   echo "  Extracted $(wc -l < "${HOST_PORTS}") host TCP port(s) into host-ports.txt"
   echo "  Extracted $(wc -l < "${INTRANET_ENDPOINTS}") intranet endpoint(s) into intranet-endpoints.txt"

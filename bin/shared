@@ -465,11 +465,19 @@ strip_quotes() {
 #   SETUID,SETGID : gosu's root->dev privilege drop (setresuid/setresgid) and
 #                   squid's root->proxy drop — both need them, unconditionally
 #                   (gosu runs in every door, squid only when whitelisted).
+#   DAC_OVERRIDE: squid's daemon-mode startup. Empirically bisected 2026-11-03
+#                 (Squid 5.7): with no-new-privileges + this bounding set,
+#                 the worker exits status 1 and the parent gives up ("will not
+#                 be restarted … repeated, frequent failures") without it;
+#                 it starts and binds 3128 with it. CHOWN and FOWNER were
+#                 tested and are NOT sufficient; DAC_OVERRIDE is required and
+#                 sufficient — it stays in every door (the cap is only usable
+#                 pre-setuid for root; the worker drops all caps anyway).
 # Keep this the single place caps are granted. (The previous attempt to trim
 # SETUID/SETGID when squid was off broke `gosu dev` — every door drops
 # privileges to dev, so these caps are not optional even without a proxy.)
 compute_cap_flags() {
-  CAP_FLAGS=(--cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID)
+  CAP_FLAGS=(--cap-drop=ALL --cap-add NET_ADMIN --cap-add SETUID --cap-add SETGID --cap-add DAC_OVERRIDE)
 }
 
 # read_policy <key>

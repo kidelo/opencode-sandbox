@@ -5,8 +5,10 @@ set -euo pipefail
 # Read-only rootfs + tmpfs note. Every door runs with `--read-only` plus a sized
 # tmpfs map (see build_run_flags in bin/shared), so the overlay image is
 # immutable at runtime and temp/home writes are memory-bounded. The bounding
-# capability set is deliberately {NET_ADMIN,SETUID,SETGID} — NO CAP_CHOWN — and
-# Docker's --tmpfs has no uid/gid option, so this entrypoint chowns nothing.
+# capability set is deliberately {NET_ADMIN,SETUID,SETGID,DAC_OVERRIDE} —
+# NO CAP_CHOWN (DAC_OVERRIDE exists for squid's daemon startup, see
+# compute_cap_flags in bin/shared) — and Docker's --tmpfs has no uid/gid
+# option, so this entrypoint chowns nothing.
 # The dirs the unprivileged users write are mounted mode=1777 (sticky
 # world-writable): dev creates its own ~/.cache|.config and ~/.local/state; the
 # opencode state bind at ~/.local/share/opencode stays untouched (never recurse
