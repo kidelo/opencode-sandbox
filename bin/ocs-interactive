@@ -13,6 +13,21 @@ set -euo pipefail
 #   ocs tui [name] -s <id>       # continue a specific session by id
 # (OpenCode 2 removed --fork from the TUI's CLI flag set — forking is
 #  done inside the TUI / session picker, not as a door flag.)
+#
+# Detached mode (the agent keeps working without a terminal):
+#   ocs tui [name] --detach [-c|-s <id>]   start a LONG-LIVED container and
+#        run the TUI inside a tmux session. Detach with Ctrl-B D (the TUI and
+#        its in-process server — i.e. any running agent work — keep going);
+#        re-later. The container is deterministic (ocs-<ID>-tui), visible in
+#        `ocs status`, cleaned by `ocs kill` / `ocs clean`.
+#   ocs tui [name] --attach     re-attach the tmux session of a running
+#        detached container.
+#   ocs tui [name] --stop       stop + remove the detached container (its
+#        session data stays in the persistent opencode state tree).
+#   ocs tui [name] --status     print the detached container + tmux state.
+# tmux ships in the precompiled `ocs-base` image (base.Dockerfile) so every
+# profile supports detached mode; `ocs tui` with no mode flag is the classic
+# one-shot door and is unchanged.
 
 # Source common configuration
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -21,39 +36,73 @@ source "${SCRIPT_DIR}/shared"
 
 usage() {
   cat <<'EOF'
-usage: ocs tui [name] [resume-flags]
+usage: ocs tui [name] [resume-flags] [mode]
 
-Runs the opencode interactive TUI (one-shot, sandboxed). Resume options
-(passed through to 'opencode'):
+Runs the opencode interactive TUI (sandboxed).
+
+Resume options (passed to 'opencode', start modes only):
   -c, --continue        continue the last session (e.g. after an abort)
   -s, --session <id>    continue a specific session by id
+
+Modes (exactly the one-shot behaviour when omitted):
+  --detach              start a LONG-LIVED container; the TUI runs inside a
+                        tmux session. Leave it with Ctrl-B D — the agent keeps
+                        working. Reconnect later with '--attach'. The
+                        container name is deterministic (<name>-tui) and is
+                        listed by `ocs status`, cleaned by `ocs clean`/`kill`.
+  --attach              re-attach the TUI of a running detached container.
+  --stop                stop and remove the detached container (session data
+                        stays in the opencode state tree; resume with --detach -c).
+  --status              show the container + tmux state of the detached TUI.
   -h, --help            show this help
 
 'name' may be omitted when run from inside a sandbox project (it is then
-resolved from the current directory), so 'ocs tui -c' resumes without naming
-the project.
+resolved from the current directory), so 'ocs tui -c --detach' resumes the
+last session in the background.
 EOF
 }
 
 use_sandbox_root
 print_sandbox_dir
 
-# Parse the resume flags. An empty first arg is the dispatcher's "no name"
-# placeholder — ignore it. Unknown args fail loudly instead of being dropped.
+# Parse the resume flags + the mode. An empty first arg is the dispatcher's
+# "no name" placeholder — ignore it. Unknown args fail loudly instead of
+# being dropped. MODE: oneshot (default, classic one-shot door), detach,
+# attach, stop, status.
 TUI_CONT=0
 TUI_SES=""
+MODE="oneshot"
+RESUME_MODES_OK() { [[ "${MODE}" == "oneshot" || "${MODE}" == "detach" ]]; }
+NO_RESUME_MODES_MSG="ocs tui: resume flags (-c/-s) only apply to a starting session (--detach or one-shot)."
 while [[ $# -gt 0 ]]; do
   case "${1}" in
     "")             shift; continue ;;
     -h|--help)      usage; exit 0 ;;
     -c|--continue)
+      RESUME_MODES_OK || { echo "${NO_RESUME_MODES_MSG}" >&2; usage >&2; exit 2; }
       [[ -z "${TUI_SES}" ]] || { echo "ocs tui: use either --continue OR --session <id>." >&2; usage >&2; exit 2; }
       TUI_CONT=1 ;;
     -s|--session)
+      RESUME_MODES_OK || { echo "${NO_RESUME_MODES_MSG}" >&2; usage >&2; exit 2; }
       [[ $# -ge 2 && -n "${2:-}" ]] || { echo "ocs tui: --session requires a session id." >&2; usage >&2; exit 2; }
       case "${2}" in -*) echo "ocs tui: the --session id must not start with '-'." >&2; usage >&2; exit 2 ;; esac
       [[ ${TUI_CONT} -eq 0 ]] || { echo "ocs tui: use either --continue OR --session <id>." >&2; usage >&2; exit 2; }
       TUI_SES="${2}"; shift ;;
+    --detach)
+      [[ ${MODE} == "oneshot" ]] || { echo "ocs tui: use only one of --detach/--attach/--stop/--status." >&2; usage >&2; exit 2; }
+      MODE="detach" ;;
+    --attach)
+      [[ ${MODE} == "oneshot" ]] || { echo "ocs tui: use only one of --detach/--attach/--stop/--status." >&2; usage >&2; exit 2; }
+      [[ ${TUI_CONT} -eq 0 && -z "${TUI_SES:-}" ]] || { echo "${NO_RESUME_MODES_MSG}" >&2; usage >&2; exit 2; }
+      MODE="attach" ;;
+    --stop)
+      [[ ${MODE} == "oneshot" ]] || { echo "ocs tui: use only one of --detach/--attach/--stop/--status." >&2; usage >&2; exit 2; }
+      [[ ${TUI_CONT} -eq 0 && -z "${TUI_SES:-}" ]] || { echo "${NO_RESUME_MODES_MSG}" >&2; usage >&2; exit 2; }
+      MODE="stop" ;;
+    --status)
+      [[ ${MODE} == "oneshot" ]] || { echo "ocs tui: use only one of --detach/--attach/--stop/--status." >&2; usage >&2; exit 2; }
+      [[ ${TUI_CONT} -eq 0 && -z "${TUI_SES:-}" ]] || { echo "${NO_RESUME_MODES_MSG}" >&2; usage >&2; exit 2; }
+      MODE="status" ;;
     *)              echo "ocs tui: unknown argument: ${1}" >&2; usage >&2; exit 2 ;;
   esac
   shift
@@ -84,15 +133,94 @@ POLICY_TIMEOUT="$(read_policy timeout 2>/dev/null || true)"
 # outlive the TUI and the one-shot container.
 # The resume flags are appended as separate tokens, the session id shell-quoted
 # so it survives the entrypoint's eval (same printf-%q discipline as ocs-run).
-OPCODE_CMD="opencode --standalone"
-[[ ${TUI_CONT} -eq 1 ]] && OPCODE_CMD="${OPCODE_CMD} --continue"
-[[ -n "${TUI_SES}" ]] && OPCODE_CMD="${OPCODE_CMD} --session $(printf '%q' "${TUI_SES}")"
+OC_TUI="opencode --standalone"
+[[ ${TUI_CONT} -eq 1 ]] && OC_TUI="${OC_TUI} --continue"
+[[ -n "${TUI_SES}" ]] && OC_TUI="${OC_TUI} --session $(printf '%q' "${TUI_SES}")"
 
 # Human summary of the resume state (startup banner).
 TUI_RESUME_DESC="fresh session (no resume flag)"
 [[ ${TUI_CONT} -eq 1 ]] && TUI_RESUME_DESC="continue last session"
 [[ -n "${TUI_SES}" ]] && TUI_RESUME_DESC="continue session: ${TUI_SES}"
 
+# Deterministic long-lived container name for detached mode (no $$ — the door
+# must be able to ADDRESS the container later). `ocs clean`'s anchored suffix
+# regex (-tui(-[0-9]+)?) and `ocs kill`'s ocs- prefix both cover this name.
+DETACH_NAME="${CONTAINER_NAME}-tui"
+TMUX_SESSION="ocs"
+
+detach_container_running() {
+  local running
+  running="$("${CONTAINER_RUNTIME}" inspect -f '{{.State.Running}}' "${DETACH_NAME}" 2>/dev/null || true)"
+  [[ "${running}" == "true" ]]
+}
+
+detach_tmux_session_up() {
+  "${CONTAINER_RUNTIME}" exec --user dev "${DETACH_NAME}" \
+    tmux has-session -t "${TMUX_SESSION}" >/dev/null 2>&1
+}
+
+detach_wait_session() {
+  # The entrypoint runs squid + firewall before the OPCODE_CMD — give the
+  # tmux session a few seconds to exist before we attach to it.
+  local _
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    detach_tmux_session_up && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# --- attach / stop / status: need no build artifacts, only the container ---
+if [[ "${MODE}" == "attach" ]]; then
+  if ! detach_container_running; then
+    echo "ocs tui: no detached session is running (${DETACH_NAME})." >&2
+    echo "Start one with: ocs tui --detach" >&2
+    exit 1
+  fi
+  if ! tty -s 2>/dev/null; then
+    echo "ocs tui --attach needs a TTY." >&2
+    exit 1
+  fi
+  detach_wait_session || { echo "ocs tui: the tmux session is not up yet — retry in a moment." >&2; exit 1; }
+  exec "${CONTAINER_RUNTIME}" exec -i -t --user dev "${DETACH_NAME}" \
+    tmux attach-session -t "${TMUX_SESSION}"
+fi
+
+if [[ "${MODE}" == "stop" ]]; then
+  if ! "${CONTAINER_RUNTIME}" inspect "${DETACH_NAME}" >/dev/null 2>&1; then
+    echo "ocs tui: no detached session to stop (${DETACH_NAME} does not exist)."
+    exit 0
+  fi
+  echo "Stopping detached TUI session ${DETACH_NAME} ..."
+  "${CONTAINER_RUNTIME}" stop "${DETACH_NAME}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" rm "${DETACH_NAME}" >/dev/null 2>&1 || true
+  echo "Stopped and removed. The chat history stays in the opencode state tree"
+  echo "— resume it later with: ocs tui --detach -c"
+  exit 0
+fi
+
+if [[ "${MODE}" == "status" ]]; then
+  if ! "${CONTAINER_RUNTIME}" inspect "${DETACH_NAME}" >/dev/null 2>&1; then
+    echo "no detached TUI session (${DETACH_NAME} does not exist)"
+    echo "start one with: ocs tui --detach"
+    exit 0
+  fi
+  if detach_container_running; then
+    echo "container: ${DETACH_NAME} (running)"
+    if detach_tmux_session_up; then
+      echo "tmux sessions:"
+      "${CONTAINER_RUNTIME}" exec --user dev "${DETACH_NAME}" tmux ls 2>/dev/null | sed 's/^/  /'
+    else
+      echo "tmux session: not up (starting, or the TUI exited inside it)"
+    fi
+  else
+    echo "container: ${DETACH_NAME} (stopped)"
+  fi
+  echo "attach with: ocs tui --attach ; start again with: ocs tui --detach"
+  exit 0
+fi
+
+# --- the starting modes (oneshot + detach) need the built artifacts --------
 if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
   echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
   echo "Run ocs rebuild first."
@@ -104,6 +232,54 @@ if ! "${CONTAINER_RUNTIME}" image inspect "${CONTAINER_NAME}" >/dev/null 2>&1; t
   echo "Run ocs rebuild first."
   exit 1
 fi
+
+# --- detached mode: long-lived container, TUI inside tmux -----------------
+# The one-shot door runs `opencode --standalone` as its main process, so the
+# container dies the moment the terminal goes away. In detached mode the
+# OPCODE_CMD starts the TUI detached in a tmux session and the container's
+# main process parks on `sleep infinity` — leaving the terminal (Ctrl-B D)
+# detaches the tmux CLIENT, while the tmux SERVER (and with it the TUI, its
+# in-process server and any running agent work) keeps going. tmux comes from
+# the precompiled ocs-base image (every profile has it).
+if [[ "${MODE}" == "detach" ]]; then
+  build_run_flags
+  OPCODE_CMD="tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} '${OC_TUI}'; sleep infinity"
+
+  if detach_container_running; then
+    echo "Detached TUI is already running: ${DETACH_NAME}"
+  elif "${CONTAINER_RUNTIME}" inspect "${DETACH_NAME}" >/dev/null 2>&1; then
+    echo "Restarting the stopped detached TUI container ${DETACH_NAME} ..."
+    "${CONTAINER_RUNTIME}" start "${DETACH_NAME}" >/dev/null
+  else
+    echo "Starting detached TUI session (long-lived container ${DETACH_NAME}) ..."
+    echo "   type:      detached TUI in tmux — leave with Ctrl-B D, the agent keeps working"
+    echo "   model:     ${MODEL} (pinned in config/opencode.jsonc — the V2 TUI has no --model flag)"
+    echo "   resume:    ${TUI_RESUME_DESC}"
+    for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done
+    echo "---"
+    echo ""
+    "${CONTAINER_RUNTIME}" run -d --init \
+      --name "${DETACH_NAME}" \
+      -e "OPCODE_CMD=${OPCODE_CMD}" \
+      "${RUN_FLAGS[@]}" \
+      "${CONTAINER_NAME}" >/dev/null
+  fi
+
+  detach_wait_session && true || echo "WARNING: the tmux session is not up yet — 'ocs tui --status' shows the state; retry the attach."
+
+  if tty -s 2>/dev/null; then
+    exec "${CONTAINER_RUNTIME}" exec -i -t --user dev "${DETACH_NAME}" \
+      tmux attach-session -t "${TMUX_SESSION}"
+  fi
+  echo "The detached TUI is running in the background."
+  echo "   leave it  : Ctrl-B D (the agent keeps working)"
+  echo "   re-attach : ocs tui --attach"
+  echo "   stop it   : ocs tui --stop"
+  exit 0
+fi
+
+# --- one-shot (classic door, unchanged behaviour) --------------------------
+OPCODE_CMD="${OC_TUI}"
 
 if ! tty -s 2>/dev/null; then
   echo "ocs-interactive needs a TTY (it starts the opencode TUI)." >&2

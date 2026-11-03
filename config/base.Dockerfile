@@ -48,6 +48,7 @@ RUN apt-get update \
         gosu \
         procps \
         squid \
+        tmux \
         iptables \
         iproute2 \
         iputils-ping \

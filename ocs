@@ -11,6 +11,9 @@ set -euo pipefail
 #   ocs tui <name> [-c] [-s ID]            Interactive TUI (one-shot);
 #                                          resume the last (-c) or a session (-s)
 #                                          after an abort. (OpenCode 2 dropped --fork from the TUI.)
+#   ocs tui <name> --detach                Detached TUI: long-lived container, TUI in tmux —
+#                                          leave with Ctrl-B D, the agent keeps working;
+#                                          --attach / --stop / --status manage it.
 #   ocs run <name> <prompt> [args]   One-shot 'opencode run' (prompt file or inline string)
 #   ocs plan [name] <prompt> [args]  Plan-mode one-shot: the run door pinned to
 #                                    OpenCode's read-only Plan agent
@@ -50,11 +53,15 @@ commands:
                           --dockerfile: image profile; --no-build: skip build)
   rebuild <name>   Build the container image for <name>
   start <name>     Start the one-shot web container (Ctrl+C stops and removes it)
-   tui [name] [-c] [-s ID]
-                         Interactive OpenCode TUI (one-shot). Resume an aborted
-                         session: -c/--continue (last) or -s/--session <id> (one).
-                         The name may be omitted when run from inside a sandbox
-                         project. (OpenCode 2 dropped the V1 --fork TUI flag.)
+   tui [name] [-c|-s ID] [--detach|--attach|--stop|--status]
+                         Interactive OpenCode TUI. Default = one-shot (Ctrl-D
+                         ends it). Detached: --detach starts a long-lived
+                         container and runs the TUI in tmux — leave it with
+                         Ctrl-B D and the agent keeps working; --attach
+                         reconnects, --stop ends it, --status shows state.
+                         Resume an aborted/previous session with -c/--continue
+                         (last) or --session <id> (start modes). The name may
+                         be omitted when run from inside a sandbox project.
   run <name> <prompt> [args]   One-shot opencode run; <prompt> is a prompt
                        file (md) or an inline prompt string
   plan [name] <prompt> [args]  Plan-mode one-shot: the run door pinned to

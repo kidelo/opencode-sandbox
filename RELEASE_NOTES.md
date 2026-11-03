@@ -13,7 +13,86 @@ GitHub release tags.
 
 ---
 
-## v0.7.2 — squid under full hardening *(this push)*
+## v0.8 — detached TUI: leave the terminal, the agent keeps working *(this push)*
+
+**Feature.** `ocs tui` gains an **optional** detached mode: the TUI runs inside a
+`tmux` session in a **long-lived** container, so you can *leave the terminal*
+(`Ctrl-B D`, or just close it / end the SSH session) and the OpenCode session —
+including any **running agent work** — keeps going. `--attach` reconnects from
+any terminal later; `--stop` / `--status` manage it. The **default door is
+unchanged** (one-shot: `exit` still ends it and removes the container).
+
+Why this shape: the one-shot `ocs tui` runs `opencode --standalone` as the
+container's main process, so "no terminal" == "container gone" == "work gone".
+In detached mode the door's command starts the TUI **detached in tmux**
+(`tmux new-session -d`) and parks the main process on `sleep infinity`: leaving
+kills the tmux *client* only, while the tmux *server* (and with it the TUI and
+its in-process server) stays alive in the container.
+
+### Highlights
+
+- **`ocs tui` modes** (new flags in `bin/ocs-interactive`):
+  - `--detach` — start/reuse the long-lived container (`ocs-<ID>-tui`) and,
+    when a TTY is present, attach immediately; with no TTY just start it
+  - `--attach` — reconnect the tmux session of the running detached TUI
+  - `--stop` — `docker stop` + remove the detached container (the chat history
+    stays in the persistent opencode state tree — resume with `--detach -c`)
+  - `--status` — print container + tmux state
+  - default (no mode) — the classic one-shot door, byte-for-byte the same
+    behaviour as before (`-c/--continue`, `-s/--session <id>` unchanged)
+- **`tmux` ships in the precompiled base** (`config/base.Dockerfile` apt set),
+  so *every* profile (and the test image) has it. `OCS_BASE_API` bumps 6→7 so
+  the cached base images are re-baked once (and the base-full rebuild follows).
+- **Lifecycle plumbing:** deterministic name `ocs-<ID>-tui` (no `$$`) is
+  covered by `ocs clean`'s anchored `-tui` suffix and `ocs kill`'s ocs- prefix;
+  `ocs status` lists it; `--detach` is idempotent (second call = "already
+  running"); `timeout:` does **not** apply to the long-lived container (like
+  `ocs start`); the door reuses `build_run_flags`, so the full hardening set
+  (caps, limits, ro rootfs, tmpfs, squid, dedicated network) applies identically
+- **Doc sync:** `README.md` (tui section + example block + TOC anchor),
+  `AGENTS.md` (surface / naming / base bullets), `ocs help`
+
+### Breaking changes
+
+None — the default `ocs tui` one-shot door is unchanged. Detached mode is opt-in.
+
+### Upgrade steps
+
+- `ocs rebuild` once (re-bakes `ocs-base` / `ocs-base-full` with `tmux`; the
+  detached door is assembled at `docker run` time, no other restarts needed).
+- Any *existing* detached container from an older image can be left running or
+  `ocs tui --stop` + restarted; `ocs clean <name>` / `ocs kill` still remove it.
+
+### Verification
+
+_(from the live runs on Docker 29.9.2, 2026-11-03)_
+
+- `ocs rebuild`: both bases re-baked (api 7, `tmux 3.3a` present in the
+  project image), `full` profile built clean
+- `ocs tui --detach` with no TTY starts the container and reports the
+  attach/stop/status commands; the tmux session `ocs` is up.
+- Prompt sent **with zero clients attached** via `tmux send-keys`; the agent
+  replied (`Build · Qwen3.8 27B`, `OCS-BG-OK`) while no terminal was attached.
+- `ocs tui --attach` (PTY, 8 s) shows the chat; killing that client afterwards
+  leaves the tmux session alive.
+- `--detach` while running → "Detached TUI is already running".
+- `--stop` removes it; `--attach` with none running fails cleanly.
+- `ocs tui --detach -c` resumes the last session (chat still present).
+- `ocs test` full suite: **28 passed, 0 failed, 1 skipped** (the skip is the
+  legitimate case-04: this project whitelists `.example.com`)
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+
+### Release metadata (v0.8)
+
+- **Base:** `e692074` (v0.7.2 + config)
+- **Commits in range:** `config/base.Dockerfile` (tmux), `bin/ocs-rebuild-container`
+  (OCS_BASE_API 6→7), `bin/ocs-interactive` (modes), `bin/ocs-clean` (`-tui` suffix),
+  `ocs` (help), `AGENTS.md`, `README.md`, `RELEASE_NOTES.md`
+- **Next tag:** `RELEASE_V0.8-KIDELO` (when published)
+
+---
+
+## v0.7.2 — squid under full hardening
 
 **Bug fix: with a non-empty `http-domain-whitelist`, `ocs start` still died
 at container start under the full hardening flag set.** v0.7.1 fixed how
@@ -561,6 +640,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
+| **v0.8** | **detached TUI** — `ocs tui --detach/--attach/--stop/--status`: TUI in tmux in a long-lived container, leave with Ctrl-B D, the agent keeps working; `tmux` in `ocs-base` | `RELEASE_V0.8-KIDELO` (planned) |
 | **v0.7.2** | **squid under full hardening** — worker died under `cap-drop=ALL` + `no-new-privileges`; `CAP_DAC_OVERRIDE` added (bisected; CHOWN/FOWNER not sufficient) | `RELEASE_V0.7.2-KIDELO` (published) |
 | v0.7.1 | squid startup fix — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | shipped in the v0.7.2 push (commit `4d04452`) |
 | v0.7 | **OpenCode 2.2.5 pin** (latest) + standalone-in-docker & last-session resume re-verified + `compaction.buffer: 20%` shipped + `/goal` & `/schedule` awareness | `RELEASE_V0.7-KIDELO` (published) |

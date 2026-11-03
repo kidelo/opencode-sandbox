@@ -45,7 +45,7 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 - [Project setup](#project-setup)
 - [Commands](#commands)
   - [`ocs init`](#ocs-init-name) · [`ocs rebuild`](#ocs-rebuild-name) · [`ocs start`](#ocs-start-name) · [`ocs web`](#ocs-web-name) · [`ocs web-auth`](#ocs-web-auth-name)
-   - [`ocs terminal`](#ocs-terminal-name) · [`ocs tui`](#ocs-tui-name-resume-flags) · [`ocs run`](#ocs-run-name-prompt) · [`ocs plan`](#ocs-plan-name-prompt) · [`ocs test`](#ocs-test-name)
+   - [`ocs terminal`](#ocs-terminal-name) · [`ocs tui`](#ocs-tui-name-resume-flags-mode) · [`ocs run`](#ocs-run-name-prompt) · [`ocs plan`](#ocs-plan-name-prompt) · [`ocs test`](#ocs-test-name)
   - [`ocs clean`](#ocs-clean-name) · [`ocs kill`](#ocs-kill) · [`ocs list`](#ocs-list) · [`ocs status`](#ocs-status-name) · [`ocs logs`](#ocs-logs-name-flags)
 - [Container lifecycle](#container-lifecycle)
 - [Network isolation](#network-isolation)
@@ -114,6 +114,8 @@ ocs start my-sandbox                     # one-shot web container, Ctrl-C to sto
 # or
  ocs tui my-sandbox                       # interactive TUI, no web server
  ocs tui my-sandbox -c                    # resume the last (aborted) session
+ ocs tui my-sandbox --detach              # detached TUI — Ctrl-B D to leave, agent keeps working
+ ocs tui my-sandbox --attach              # reconnect to the detached TUI
 # or
 ocs run my-sandbox prompt.md             # one-shot prompt-file run
 ```
@@ -193,11 +195,26 @@ Opens the browser with credentials embedded in the URL (basic auth) on macOS or 
 
 Attaches an OpenCode terminal session to the running web container — **from inside it**. The door `docker exec`s a TUI into the web container pointed at the in-container server (`opencode --server http://127.0.0.1:$OPENCODE_PORT`), so it shares sessions with the browser UI and never requires an opencode install on the host.
 
-### `ocs tui [name] [resume-flags]`
+### `ocs tui [name] [resume-flags] [mode]`
 
-Starts a **one-shot container** and drops directly into the **opencode interactive terminal (TUI)** as the unprivileged `dev` user — no web server involved. The Squid proxy and firewall are applied first (by the entrypoint), so the session is sandboxed exactly like the web one. Leave the session with `Ctrl+D` / `/exit`; the container is removed.
+Starts a **one-shot container** by default and drops directly into the **opencode interactive terminal (TUI)** as the unprivileged `dev` user — no web server involved. The Squid proxy and firewall are applied first (by the entrypoint), so the session is sandboxed exactly like the web one. Leave the session with `Ctrl+D` / `/exit`; the container is removed.
 
 Runs a one-shot `docker run` with a distinct name, so a web container from `ocs start` can keep running in parallel.
+
+**Detached mode (the agent keeps working without a terminal).** `--detach` runs the TUI inside a `tmux` session in a **long-lived** container (deterministic name `ocs-<id>-tui`, listed by `ocs status`, cleaned by `ocs clean`/`ocs kill`):
+
+```sh
+ocs tui my-sandbox --detach              # start + attach; leave with Ctrl-B D
+ocs tui my-sandbox --attach              # reconnect to the running detached TUI
+ocs tui my-sandbox --stop                # stop + remove it (history stays persisted)
+ocs tui my-sandbox --status              # container + tmux state
+```
+
+- Press **`Ctrl-B D`** inside the TUI to *leave it* — the TUI process and its in-process server (any running agent work continues) keep going in the tmux session.
+- Reconnect from any terminal with `--attach` (works headless-less: the starting `--detach` command also just *starts* it when there is no TTY, e.g. from a script).
+- `timeout:` does not apply to the long-lived container (like `ocs start`); resume a previous run with `--detach -c` / `--detach -s <id>`.
+- `tmux` ships in the precompiled `ocs-base` image, so every profile supports this.
+- `--attach`/`--stop`/`--status` are management-only and take no resume flags; `-c`/`-s` combine only with the default mode and `--detach`.
 
 **Resuming an aborted session.** Session history is persisted between runs (it lives in the persistent opencode state, mounted at `/home/dev/.local/share/opencode`), so if a TUI run aborts you can pick it back up:
 

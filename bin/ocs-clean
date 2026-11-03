@@ -61,7 +61,7 @@ print_sandbox_dir
 # `^ocs-<ID>` prefix would also match `ocs-<ID>2` or `ocs-<ID>-foo-…`).
 ID_NEW="ocs-${SANDBOX_ID}"
 ID_OLD="opencode-sandbox-${SANDBOX_ID}"
-CSUF='(-tui-[0-9]+|-run-[0-9]+|-test(-[0-9]+)?|-peer-[0-9]+|-lst-ep-[0-9]+|-lst-host-[0-9]+)?'
+CSUF='(-tui(-[0-9]+)?|-run-[0-9]+|-test(-[0-9]+)?|-peer-[0-9]+|-lst-ep-[0-9]+|-lst-host-[0-9]+)?'
 MATCH_NEW="^${ID_NEW}${CSUF}$"
 MATCH_OLD="^${ID_OLD}${CSUF}$"
 NET_NEW="ocs-net-${SANDBOX_ID}"
