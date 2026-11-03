@@ -33,7 +33,7 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 
 > **Fast setup (`ocs init` is quick by design).** The expensive, project-independent work is built **once per host** into local **base images** (not re-run per project), and every profile just layers its own extras on top of them. There are two levels: `ocs-base` (the common packages + `dev` user + the OpenCode download, from `config/base.Dockerfile`) and `ocs-base-full` (adds the `full` profile's dev toolchain — the apt set + the large pip data/office/PDF/OCR/sci stack — from `config/base-full.Dockerfile`). So the first `ocs rebuild` on a host pays for the base(s) once, and each subsequent `ocs init`/`ocs rebuild` (for any project, **any profile**) only rebuilds the thin per-project tail — a few seconds, not minutes. `ocs kill` removes both shared bases (it's a host-wide cleanup); `ocs clean <name>` leaves them in place so other projects keep working.
 >
-> The **OpenCode CLI is pinned to a specific version** in the base image (`config/base.Dockerfile` — `ARG OPENCODE_BUILD_VERSION`, currently 2.1.2 — OpenCode 2). Every container therefore runs the exact CLI version it was built with, so behaviour is reproducible host-to-host and rebuild-to-rebuild. OpenCode 2 is installed from the **`https://opencode.ai/v2/install`** endpoint (the OpenCode 1 installer refuses 2.x releases); the install URL is baked into `config/base.Dockerfile`. Bump the one version line (and `OCS_BASE_API` in `bin/ocs-rebuild-container`) to track a new CLI release — `ocs rebuild` then re-builds the bases once (see "Image profiles").
+> The **OpenCode CLI is pinned to a specific version** in the base image (`config/base.Dockerfile` — `ARG OPENCODE_BUILD_VERSION`, currently 2.2.5 — OpenCode 2). Every container therefore runs the exact CLI version it was built with, so behaviour is reproducible host-to-host and rebuild-to-rebuild. OpenCode 2 is installed from the **`https://opencode.ai/v2/install`** endpoint (the OpenCode 1 installer refuses 2.x releases); the install URL is baked into `config/base.Dockerfile`. Bump the one version line (and `OCS_BASE_API` in `bin/ocs-rebuild-container`) to track a new CLI release — `ocs rebuild` then re-builds the bases once (see "Image profiles").
 
 > **Want to just start using it?** Read [HOWTO.md](HOWTO.md) — a step-by-step guide covering setup, every way to run OpenCode, the working directories, config, and troubleshooting. This README is the reference and the design rationale.
 
@@ -241,6 +241,12 @@ ocs plan "draft an implementation plan"              # from inside a project
 ```
 
 Everything else about `ocs run` applies (model pin, prompt file vs inline, exit code, `timeout:` policy). In the interactive TUI (`ocs tui`) you get the same switch live: **Shift+Tab** cycles the primary agents (Build → Plan → Build, the built-in OpenCode 2 default — remap it to Tab via the TUI settings, `{"keybinds": {"agent_cycle": "tab"}}` in `~/.config/opencode/tui.json`) — plan first, review the proposal, switch back to Build, and let it implement. `ocs run` also accepts `--agent plan` directly (`ocs run my-sandbox "plan this" --agent plan`).
+
+### Built-ins available in OpenCode 2.2.5 (the pinned version)
+
+- **`/goal <objective>`** — inside the TUI (`ocs tui`): the session keeps working while an automatic review checks progress, until the objective is met. Control it with `/goal pause`, `/goal resume`, or `/goal clear`. It is a TUI session command — the one-shot `ocs run` doors do not run it.
+- **`/schedule`** — scheduled prompts, opt-in via the `experimental.schedules` key in `opencode.jsonc`. It stays **experimental and off** in the shipped config: scheduled wake-ups only make sense in a long-running server (`ocs start`), and the one-shot doors never outlive their session.
+- **`compaction.buffer: "20%"`** — the shipped `config/opencode.jsonc` sets this (the percentage form landed in 2.2.5), keeping 20% of the model's context window free — long agent sessions survive near-full context without a model-specific token value.
 
 ### `ocs test <name>`
 

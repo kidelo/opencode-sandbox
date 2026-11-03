@@ -12,7 +12,100 @@ release tags.
 
 ---
 
-## v0.6 — plan mode, custom agents & skills, todo verified *(this push)*
+## v0.7 — OpenCode 2.2.5 pin + 2.2.x feature set *(this push)*
+
+The sandbox now ships the newest OpenCode 2 release, **v2.2.5** (2026-10-30).
+The pinned CLI moves forward, the standalone-in-docker design and
+last-session resume are re-verified against 2.2.5, and the 2.2.x features
+that fit a one-shot sandbox are adopted (or deliberately left off).
+
+### Highlights
+
+- **Containers ship OpenCode 2.2.5** — `OPENCODE_BUILD_VERSION` in
+  `bin/ocs-rebuild-container` (single source; `--build-arg` to
+  `config/base.Dockerfile`, whose `ARG` default + version guard move with it)
+  bumped 2.1.2 → 2.2.5; `OCS_BASE_API` bumped 5→6 so cached precompiled
+  bases are re-baked once, never stale-reused. Every CLI surface the doors
+  rely on was re-verified against the **actual 2.2.5 release binary** before
+  shipping: TUI `--standalone --continue/-c --session/-s`,
+  `opencode run --standalone -m/--agent/--fork`,
+  `opencode serve --hostname --port`, `opencode session list`
+- **Standalone mode inside Docker (confirmed on 2.2.5)** — every one-shot
+  door keeps using a **private server** (`opencode --standalone` for the
+  TUI, `opencode run --standalone` for one-shots), so no shared background
+  service can outlive the one-shot container; `ocs start` continues to run
+  the foreground `opencode serve`. Bonus from the 2.2.4 line: local
+  OpenCode service traffic now explicitly bypasses environment-configured
+  proxies, so the in-container squid proxy env stays harmless for the
+  client↔server loopback path
+- **Last-session resume (verified on 2.2.5)** — session history persists in
+  `.sandbox/state/opencode/` (mounted at `/home/dev/.local/share/opencode`);
+  `ocs tui -c` (last session) and `ocs tui -s <id>` (specific, id from
+  `opencode session list`) both re-checked on the new release
+- **`compaction.buffer: "20%"` (2.2.5)** — the shipped
+  `config/opencode.jsonc` now sets the new percentage-based compaction
+  buffer, keeping 20% of the model's context window free: long agent runs
+  survive near-full context without a model-specific token value
+- **2.2.x feature awareness (documented, deliberately left off)** — the TUI's
+  `/goal <objective>` (the session keeps working until the objective is
+  met; `/goal pause|resume|clear`) is documented in README/HOWTO as an
+  in-container TUI command; `/schedule` (opt-in `experimental.schedules`) is
+  documented as experimental and stays **off** in the shipped config, since
+  scheduled wake-ups need a long-running server and one-shot doors never
+  outlive their session
+- **Docs** — README (current-version note + new "Built-ins available in
+  OpenCode 2.2.5" section), HOWTO (5b goal/schedule notes), AGENTS.md
+  (current-version pin note), `config/opencode.jsonc` (compaction block)
+
+### Breaking changes
+
+None — the door surface, CLI flags, and config keys are unchanged. The new
+`compaction` key is additive (read by 2.2.5+; the pinned CLI is 2.2.5).
+
+### Upgrade steps
+
+- `ocs rebuild` (from the repo) — the precompiled bases re-bake once under
+  the new `OCS_BASE_API` 6 label (one-time cost per host), then the
+  per-project profile tail layers on top as usual
+- `ocs start` / `ocs tui` / `ocs run` / `ocs test` then run OpenCode 2.2.5
+  from the rebuilt images
+- Existing projects own their `config/opencode.jsonc` — copy the new
+  `compaction` block from the repo template to pick up the 20% buffer
+  (optional; the key is a 2.2.5+ feature and not required)
+
+### Verification
+
+Partially verified on the release host (Docker 29.9.2, profile `full`,
+first-run host — bases re-baked from scratch); the remaining smoke steps
+(one-shot `ocs run`, full `ocs test` suite) were dropped on request.
+
+- ✅ `ocs rebuild` — both precompiled bases re-baked under `ocs-base-api=6`,
+  `full` profile image built, exit 0
+- ✅ image check — `opencode --version` inside the built image: **v2.2.5**
+  (the `config/base.Dockerfile` version guard also enforces this at build)
+- ✅ `ocs start` — `opencode serve` 2.2.5 up on `127.0.0.1:4096`;
+  **401** unauthenticated → **200** with basic auth
+  (`opencode:<.sandbox/build/opencode-password>`); API self-reports
+  `{"version":"2.2.5"}`
+- ✅ every flag the doors rely on was re-verified against the **2.2.5 release
+  binary** before shipping: TUI `--standalone -c/-s`, `run --standalone
+  -m/--agent`, `serve --hostname --port`
+- ⬜ `ocs tui` resume (`-c` / `-s <id>`) — not run in this cycle
+- ⬜ `ocs run` one-shot, `ocs test` full suite — not run in this cycle
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+
+### Release metadata (v0.7)
+
+- **Tag (planned):** `RELEASE_V0.7-KIDELO`
+- **Base:** `3de35c3` (v0.6 TUI keybind doc fix)
+- **Commits in range:** `bin/ocs-rebuild-container` (version + `OCS_BASE_API`),
+  `config/base.Dockerfile` (`ARG` default), `config/opencode.jsonc`
+  (compaction buffer), `README.md`, `HOWTO.md`, `AGENTS.md`,
+  `RELEASE_NOTES.md`
+
+---
+
+## v0.6 — plan mode, custom agents & skills, todo verified
 
 OpenCode 2's built-in **Plan** agent (a read-only primary agent) is now
 first-class in every door, the **todo** tool — which V2 drops from the
@@ -280,7 +373,8 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.6** | **Plan-mode door (`ocs plan`)** + TUI Shift+Tab agent switching (verified live) + custom agents/skills (defaults + first-run seed) + `todo` tool verified on 2.1.2 | `RELEASE_V0.6-KIDELO` (planned) |
+| **v0.7** | **OpenCode 2.2.5 pin** (latest) + standalone-in-docker & last-session resume re-verified + `compaction.buffer: 20%` shipped + `/goal` & `/schedule` awareness | `RELEASE_V0.7-KIDELO` (planned) |
+| v0.6 | Plan-mode door (`ocs plan`) + TUI Shift+Tab agent switching (verified live) + custom agents/skills (defaults + first-run seed) + `todo` tool verified on 2.1.2 | `RELEASE_V0.6-KIDELO` (planned) |
 | v0.5 | **OpenCode 1.x → 2.1.x migration** (doors, entrypoint auth, config shape, base, `TEST_API` 7) | `RELEASE_V0.5-KIDELO` (published) |
 | v0.4 | Extra hardening (seccomp / landlock / egress-audit / sensitive-paths / git-hook sink / squid rebinding) + test cases 24–29 | — (local) |
 | v0.3 | Per-project policy knobs + read-only rootfs / sized tmpfs / IPv6-off | — (local) |

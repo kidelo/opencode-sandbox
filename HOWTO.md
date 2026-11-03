@@ -137,6 +137,8 @@ You can also omit the name when you are inside the project: `ocs tui -c` (the pr
 
 **Plan mode (build it after you've planned it).** OpenCode ships a read-only **Plan** primary agent alongside **Build**. Press **Shift+Tab** in the TUI to cycle the primary agents (the built-in OpenCode 2 default — Tab stays with its input-field autocomplete job) — in Plan mode the agent explores the codebase and discusses the plan with you without editing your project files; when the plan looks right, Shift+Tab back to Build and ask it to implement. (The same switch exists for one-shot runs — see 5c / `ocs plan`.) Prefer **Tab** yourself? Remap it in your TUI settings: `{"keybinds": {"agent_cycle": "tab,shift+tab"}}` in `~/.config/opencode/tui.json`.
 
+**Keep working toward a goal (new in OpenCode 2.2.5).** Type `/goal <objective>` in the TUI: the session keeps going while an automatic review checks progress, until the objective is met — `/goal pause`, `/goal resume`, and `/goal clear` control it. It is a TUI session command; the one-shot doors (`ocs run` / `ocs plan`) don't run it. OpenCode 2.2.x also ships scheduled prompts (`/schedule`, opt-in `experimental.schedules`) — left **off** in the shipped config, since the one-shot doors never outlive their session and a scheduled wake-up only makes sense in a long-running `ocs start` server.
+
 ---
 
 ### 5c. One-shot with a prompt — `ocs run [name] <prompt>`

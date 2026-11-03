@@ -116,7 +116,7 @@ RUN git config --system core.hooksPath /dev/null
 # comparing to the pinned bare version. NOTE: no inline comments are allowed
 # inside the \-continuation chain below — a comment line there breaks the
 # `&&` sequence (the RUN uses bash via the SHELL directive).
-ARG OPENCODE_BUILD_VERSION=2.1.2
+ARG OPENCODE_BUILD_VERSION=2.2.5
 RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path --version "${OPENCODE_BUILD_VERSION}" \
     && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
     && chown "${USER_ID}:${GROUP_ID}" /usr/local/bin/opencode \

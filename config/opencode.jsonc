@@ -3,6 +3,13 @@
   // Always run the sandbox model (CLI paths also pin it via -m)
   "model": "ollama/qwen3.8:27b",
 
+  // OpenCode 2.2.5: keep a share of the model's context window free for
+  // compaction (percentage form — one value fits the 196k-token Qwen window
+  // and any future model). Longer agent runs survive near-full context.
+  "compaction": {
+    "buffer": "20%"
+  },
+
   // V2: the V1 `small_model` key becomes the built-in `title` agent's model.
   "agents": {
     "title": {
