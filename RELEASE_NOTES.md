@@ -6,14 +6,15 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub releases: `RELEASE_V0.7.2-KIDELO` (2026-11-03) and
-`RELEASE_V0.7-KIDELO` (2026-11-03); v0.7.1 ships in the v0.7.2 push.
+Last published GitHub releases: `RELEASE_V0.8-KIDELO`,
+`RELEASE_V0.7.2-KIDELO` and `RELEASE_V0.7-KIDELO` (all 2026-11-03);
+v0.7.1 ships in the v0.7.2 push.
 Releases v0.2–v0.6 below are local milestones shipped in the repo without
 GitHub release tags.
 
 ---
 
-## v0.8 — detached TUI: leave the terminal, the agent keeps working *(this push)*
+## v0.8 — detached TUI: leave the terminal, the agent keeps working
 
 **Feature.** `ocs tui` gains an **optional** detached mode: the TUI runs inside a
 `tmux` session in a **long-lived** container, so you can *leave the terminal*
@@ -88,7 +89,7 @@ _(from the live runs on Docker 29.9.2, 2026-11-03)_
 - **Commits in range:** `config/base.Dockerfile` (tmux), `bin/ocs-rebuild-container`
   (OCS_BASE_API 6→7), `bin/ocs-interactive` (modes), `bin/ocs-clean` (`-tui` suffix),
   `ocs` (help), `AGENTS.md`, `README.md`, `RELEASE_NOTES.md`
-- **Next tag:** `RELEASE_V0.8-KIDELO` (when published)
+- **Tag (published):** `RELEASE_V0.8-KIDELO` (2026-11-03)
 
 ---
 
@@ -640,7 +641,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.8** | **detached TUI** — `ocs tui --detach/--attach/--stop/--status`: TUI in tmux in a long-lived container, leave with Ctrl-B D, the agent keeps working; `tmux` in `ocs-base` | `RELEASE_V0.8-KIDELO` (planned) |
+| **v0.8** | **detached TUI** — `ocs tui --detach/--attach/--stop/--status`: TUI in tmux in a long-lived container, leave with Ctrl-B D, the agent keeps working; `tmux` in `ocs-base` | `RELEASE_V0.8-KIDELO` (published) |
 | **v0.7.2** | **squid under full hardening** — worker died under `cap-drop=ALL` + `no-new-privileges`; `CAP_DAC_OVERRIDE` added (bisected; CHOWN/FOWNER not sufficient) | `RELEASE_V0.7.2-KIDELO` (published) |
 | v0.7.1 | squid startup fix — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | shipped in the v0.7.2 push (commit `4d04452`) |
 | v0.7 | **OpenCode 2.2.5 pin** (latest) + standalone-in-docker & last-session resume re-verified + `compaction.buffer: 20%` shipped + `/goal` & `/schedule` awareness | `RELEASE_V0.7-KIDELO` (published) |
