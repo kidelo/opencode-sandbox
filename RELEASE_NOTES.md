@@ -6,9 +6,9 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub release: `RELEASE_V0.5-KIDELO` (2026-10-22). Releases
-v0.2–v0.4 below are local milestones shipped in the repo without GitHub
-release tags.
+Last published GitHub release: `RELEASE_V0.7-KIDELO` (2026-11-03).
+Releases v0.2–v0.6 below are local milestones shipped in the repo without
+GitHub release tags.
 
 ---
 
