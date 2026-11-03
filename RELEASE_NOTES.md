@@ -19,25 +19,36 @@ GitHub release tags.
 
 **Bug fix (v0.8 detached TUI).** Even with the v0.8.1 pane env the TUI's
 truecolour output was still being **quantised to 16/256 colours** as it crossed
-tmux — the panels and background chrome stayed "no colour". This is the second
-half of the truecolour chain.
+tmux — foreground colours survived (still visible), but the truecolour
+**backgrounds** (near-black panels/chrome) collapsed to black and "disappeared".
+This is the second half of the truecolour chain.
 
 Root cause: tmux only passes truecolour (`38;2;…`/`48;2;…`) through to the
 client if *both* the tmux **server** *and* the tmux **client** are told the
-terminal is RGB-capable. The client here is the `tmux attach` process running
-inside the container, and `docker exec` forwards **no** environment — so it saw
-no `TERM` at all and tmux fell back to the 16-colour `xterm` (confirmed with
-`list-clients`: `client_termname = xterm`, no RGB feature).
+terminal is RGB-capable — and the two halves must be applied to *every* attach.
+The client here is the `tmux attach` process running inside the container, and
+`docker exec` forwards **no** environment — so a bare attach saw no `TERM` at
+all and tmux fell back to the 16-colour `xterm` (confirmed with
+`list-clients`: `client_termname = xterm`, no RGB feature). The first pass of
+this fix wired the two halves into the `ocs tui --attach` branch and the server
+start, but the **initial attach of `ocs tui --detach`** — the screen the user
+actually sees first — was still a bare attach with no client `TERM`, so the
+backgrounds stayed missing there.
 
-The fix has **two** mandatory halves, both in `bin/ocs-interactive`:
+The fix has **two** mandatory halves (each alone → 0 truecolour, verified on a
+clean server), both in `bin/ocs-interactive`:
 
-1. **Client env** — the attach/exec now runs the tmux client with the caller's
-   real terminal: `… -e TERM=<your TERM> -e COLORTERM=<your COLORTERM> …`.
-   (The pane already got `TERM=xterm-256color COLORTERM=truecolor` from v0.8.1;
-   this fixes the *client* side of the channel.)
+1. **Client env** — the tmux client runs with the caller's real terminal:
+   `… -e TERM=<your TERM> -e COLORTERM=<your COLORTERM> …`. (The pane already
+   got `TERM=xterm-256color COLORTERM=truecolor` from v0.8.1, so the TUI
+   *emits* truecolour; this fixes the *client* side of the channel.)
 2. **Server feature** — the server is taught that this terminal is RGB via
    `tmux set -as terminal-features '<TERM>:RGB'`, baked into the long-lived
    container's `OPCODE_CMD` and re-applied on every attach.
+
+Both halves are now applied at **every** attach site through a shared
+`attach_tui()` helper — the `ocs tui --attach` branch **and** the `ocs tui
+--detach` initial attach — so no door attaches a bare 16-colour client.
 
 Gated by `term_is_truecolor()`: only genuinely RGB-capable terminals get it
 (`xterm-256color`, `xterm-direct`, `alacritty`, `kitty`, `wezterm`, `foot*`,
@@ -47,17 +58,18 @@ terminals are not garbled.
 
 ### Highlights
 
-- `bin/ocs-interactive`: the detached door now bakes both halves into the
-  container's `OPCODE_CMD`:
+- `bin/ocs-interactive`: new shared `attach_tui()` applies both halves (client
+  `TERM` + server `terminal-features …:RGB`) at every attach site; the
+  `ocs tui --detach` initial attach now goes through it too (previously a bare
+  attach that quantised the TUI's truecolour backgrounds to black).
+- The detached door still bakes the server half into `OPCODE_CMD`:
   `tmux new-session -d -s ocs -e TERM=xterm-256color -e COLORTERM=truecolor …`
-  plus `tmux set -as terminal-features 'xterm-256color:RGB'` at start — and
-  re-applies both on every `ocs tui --attach`.
-- Verified **live end-to-end** on the real detached TUI: the pane stream now
-  carries **236 truecolour sequences** (`38;2;…`/`48;2;…`) reaching the
-  user's terminal, instead of being quantised to 16/256 colours.
-- Isolated A/B (same image, tmux 3.3a): server-feature-only → 0; `-e`-only →
-  0; **both halves → truecolour flows through** (proven with a disposable
-  gradient pane).
+  plus `tmux set -as terminal-features 'xterm-256color:RGB'`.
+- Verified **live end-to-end** on the real detached TUI: the initial `--detach`
+  attach and the `--attach` re-attach both now carry **foreground + background
+  truecolour** (`38;2;…`/`48;2;…`, e.g. `48;2;10;10;10`) to the terminal — the
+  `--detach` initial attach previously delivered 0 truecolour (backgrounds
+  quantised to black).
 
 ### Breaking changes
 
@@ -67,26 +79,28 @@ None.
 
 - **No rebuild needed.** The detached door is assembled at `docker run` time.
   For an already-running detached container: `ocs tui --stop`, then
-  `ocs tui --detach` again so the new `OPCODE_CMD` (with both halves) applies.
+  `ocs tui --detach` again so the new door logic applies.
 - The default one-shot door is unchanged.
 
 ### Verification
 
-- Live `ocs tui --detach` → pane env `TERM=xterm-256color COLORTERM=truecolor
-  LANG=de_DE.UTF-8`, and the server's `tmux show-options` now lists
-  `xterm-256color:RGB`.
-- Client attach (with `-e TERM=xterm-256color -e COLORTERM=truecolor`) over the
-  pane stream: **236 truecolour sequences** captured in the raw stream
-  (`38;2;255;255;255`, `48;2;10;10;10`, …) — previously 0.
-- `term_is_truecolor()` gate tested on the three required cases
-  (`xterm-256color` w/o COLORTERM → allow; bare `xterm` → deny; COLORTERM set
-  → allow).
+- Clean A/B matrix (server features reset to tmux 3.3a defaults first):
+  server-feature-only → **0** truecolour; client-`TERM`-only → **0**; **both
+  halves → 156 truecolour** (fg=100, bg=56). Proves both halves are mandatory.
+- Live `ocs tui --detach` (user env `TERM=xterm-256color`, empty `COLORTERM`):
+  initial attach stream now carries truecolour **with backgrounds**
+  (`38;2;…` fg=90, `48;2;10;10;10` bg=59) — previously 0.
+- Live `ocs tui --attach`: truecolour fg=100 / bg=56.
+- Guard: `TERM=xterm` (bare 16-colour) attach → **0** truecolour (no garble).
+- `term_is_truecolor()` gate tested (`xterm-256color` w/o COLORTERM → allow;
+  bare `xterm` → deny; explicit COLORTERM → allow).
 - `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean
 
 ### Release metadata (v0.8.2)
 
 - **Base:** `d8cbcb6`
-- **Commits in range:** `bin/ocs-interactive`, `RELEASE_NOTES.md`
+- **Commits in range:** `bin/ocs-interactive`, `README.md`, `RELEASE_NOTES.md`
+- **Tag (published):** `RELEASE_V0.8.2-KIDELO` (2026-11-03)
 
 ---
 
@@ -130,82 +144,6 @@ None.
 - **Commits in range:** `bin/ocs-interactive`, `AGENTS.md`, `README.md`,
   `RELEASE_NOTES.md`
 - **Tag (published):** `RELEASE_V0.8.1-KIDELO` (2026-11-03)
-
----
-
-## v0.8.2 — detached TUI: truecolour passes through to the terminal
-
-**Bug fix (v0.8 detached TUI).** Even with the v0.8.1 pane env the TUI's
-truecolour output was still being **quantised to 16/256 colours** as it crossed
-tmux — the panels and background chrome stayed "no colour". This is the second
-half of the truecolour chain.
-
-Root cause: tmux only passes truecolour (`38;2;…`/`48;2;…`) through to the
-client if *both* the tmux **server** *and* the tmux **client** are told the
-terminal is RGB-capable. The client here is the `tmux attach` process running
-inside the container, and `docker exec` forwards **no** environment — so it saw
-no `TERM` at all and tmux fell back to the 16-colour `xterm` (confirmed with
-`list-clients`: `client_termname = xterm`, no RGB feature).
-
-The fix has **two** mandatory halves, both in `bin/ocs-interactive`:
-
-1. **Client env** — the attach/exec now runs the tmux client with the caller's
-   real terminal: `… -e TERM=<your TERM> -e COLORTERM=<your COLORTERM> …`.
-   (The pane already got `TERM=xterm-256color COLORTERM=truecolor` from v0.8.1;
-   this fixes the *client* side of the channel.)
-2. **Server feature** — the server is taught that this terminal is RGB via
-   `tmux set -as terminal-features '<TERM>:RGB'`, baked into the long-lived
-   container's `OPCODE_CMD` and re-applied on every attach.
-
-Gated by `term_is_truecolor()`: only genuinely RGB-capable terminals get it
-(`xterm-256color`, `xterm-direct`, `alacritty`, `kitty`, `wezterm`, `foot*`,
-`rxvt-unicode*`, plus an explicit `COLORTERM` of `truecolor`/`TrueColor`/
-`24bit`). A bare 16-colour `xterm` is left untouched, so genuinely 16-colour
-terminals are not garbled.
-
-### Highlights
-
-- `bin/ocs-interactive`: the detached door now bakes both halves into the
-  container's `OPCODE_CMD`:
-  `tmux new-session -d -s ocs -e TERM=xterm-256color -e COLORTERM=truecolor …`
-  plus `tmux set -as terminal-features 'xterm-256color:RGB'` at start — and
-  re-applies both on every `ocs tui --attach`.
-- Verified **live end-to-end** on the real detached TUI: the pane stream now
-  carries **236 truecolour sequences** (`38;2;…`/`48;2;…`) reaching the
-  user's terminal, instead of being quantised to 16/256 colours.
-- Isolated A/B (same image, tmux 3.3a): server-feature-only → 0; `-e`-only →
-  0; **both halves → truecolour flows through** (proven with a disposable
-  gradient pane).
-
-### Breaking changes
-
-None.
-
-### Upgrade steps
-
-- **No rebuild needed.** The detached door is assembled at `docker run` time.
-  For an already-running detached container: `ocs tui --stop`, then
-  `ocs tui --detach` again so the new `OPCODE_CMD` (with both halves) applies.
-- The default one-shot door is unchanged.
-
-### Verification
-
-- Live `ocs tui --detach` → pane env `TERM=xterm-256color COLORTERM=truecolor
-  LANG=de_DE.UTF-8`, and the server's `tmux show-options` now lists
-  `xterm-256color:RGB`.
-- Client attach (with `-e TERM=xterm-256color -e COLORTERM=truecolor`) over the
-  pane stream: **236 truecolour sequences** captured in the raw stream
-  (`38;2;255;255;255`, `48;2;10;10;10`, …) — previously 0.
-- `term_is_truecolor()` gate tested on the three required cases
-  (`xterm-256color` w/o COLORTERM → allow; bare `xterm` → deny; COLORTERM set
-  → allow).
-- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean
-
-### Release metadata (v0.8.2)
-
-- **Base:** `d8cbcb6`
-- **Commits in range:** `bin/ocs-interactive`, `RELEASE_NOTES.md`, `README.md`
-- **Tag (published):** `RELEASE_V0.8.2-KIDELO` (2026-11-03)
 
 ---
 
@@ -836,6 +774,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
+| **v0.8.2** | **detached TUI truecolour passthrough** — tmux needs BOTH the server's `terminal-features …:RGB` AND a client with real `TERM`; shared `attach_tui()` applies both halves at every attach site (the `--detach` initial attach was a bare attach → truecolour backgrounds quantised to black) | `RELEASE_V0.8.2-KIDELO` (published) |
 | **v0.8.1** | **detached TUI truecolour** — pane starts with TERM=xterm-256color + COLORTERM=truecolor (the TUI's renderer fell back to 16-colour under tmux's default TERM=screen) | `RELEASE_V0.8.1-KIDELO` (published) |
 | **v0.8** | **detached TUI** — `ocs tui --detach/--attach/--stop/--status`: TUI in tmux in a long-lived container, leave with Ctrl-B D, the agent keeps working; `tmux` in `ocs-base` | `RELEASE_V0.8-KIDELO` (published) |
 | **v0.7.2** | **squid under full hardening** — worker died under `cap-drop=ALL` + `no-new-privileges`; `CAP_DAC_OVERRIDE` added (bisected; CHOWN/FOWNER not sufficient) | `RELEASE_V0.7.2-KIDELO` (published) |

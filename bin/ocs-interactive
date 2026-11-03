@@ -211,6 +211,33 @@ term_is_truecolor() {
   return 1
 }
 
+# --- truecolour-aware attach (shared by --attach AND the --detach initial
+# attach). The tmux CLIENT (the `tmux attach` process) is what decides whether
+# the TUI's RGB output passes through or is quantised to 16/256 colours. It
+# does NOT inherit the caller's env (docker exec forwards nothing), so without
+# help it falls back to 'xterm' and always quantises — the TUI's foreground
+# colours survive quantisation (still visible) but its truecolour backgrounds
+# (near-black) collapse to black and "disappear". Empirically (tmux 3.3a,
+# clean server state) BOTH halves are required — each alone yields 0 truecolour:
+#   (1) hand the client its real TERM/COLORTERM (the -e flags below); AND
+#   (2) tell the server this terminal does RGB (terminal-features '<TERM>:RGB').
+# Gated by term_is_truecolor so a bare 16-colour 'xterm' is never garbled.
+attach_tui() {
+  if term_is_truecolor; then
+    # Half (2): teach the (possibly long-running) server about this terminal —
+    # idempotent append, so terminals attached from different shells all cover.
+    "${CONTAINER_RUNTIME}" exec --user dev "${DETACH_NAME}" \
+      tmux set -as terminal-features "${PANE_TERM}:RGB" >/dev/null 2>&1 || true
+    # Half (1): give the client its real TERM/COLORTERM so tmux renders RGB.
+    exec "${CONTAINER_RUNTIME}" exec -i -t -e TERM="${PANE_TERM}" -e COLORTERM="${PANE_COLORTERM}" \
+      --user dev "${DETACH_NAME}" tmux attach-session -t "${TMUX_SESSION}"
+  fi
+  # Non-truecolour terminal (e.g. bare 'xterm'): plain attach, let tmux
+  # quantise to the terminal's palette (no RGB claimed, so nothing to garble).
+  exec "${CONTAINER_RUNTIME}" exec -i -t --user dev "${DETACH_NAME}" \
+    tmux attach-session -t "${TMUX_SESSION}"
+}
+
 # --- attach / stop / status: need no build artifacts, only the container ---
 if [[ "${MODE}" == "attach" ]]; then
   if ! detach_container_running; then
@@ -223,16 +250,7 @@ if [[ "${MODE}" == "attach" ]]; then
     exit 1
   fi
   detach_wait_session || { echo "ocs tui: the tmux session is not up yet — retry in a moment." >&2; exit 1; }
-  if term_is_truecolor; then
-    # Teach the (possibly long-running) server about this terminal — idempotent
-    # append, so terminals attached from different shells are all covered.
-    "${CONTAINER_RUNTIME}" exec --user dev "${DETACH_NAME}" \
-      tmux set -as terminal-features "${PANE_TERM}:RGB" >/dev/null 2>&1 || true
-    exec "${CONTAINER_RUNTIME}" exec -i -t -e TERM="${PANE_TERM}" -e COLORTERM="${PANE_COLORTERM}" \
-      --user dev "${DETACH_NAME}" tmux attach-session -t "${TMUX_SESSION}"
-  fi
-  exec "${CONTAINER_RUNTIME}" exec -i -t --user dev "${DETACH_NAME}" \
-    tmux attach-session -t "${TMUX_SESSION}"
+  attach_tui
 fi
 
 if [[ "${MODE}" == "stop" ]]; then
@@ -347,9 +365,11 @@ if [[ "${MODE}" == "detach" ]]; then
 
   detach_wait_session && true || echo "WARNING: the tmux session is not up yet — 'ocs tui --status' shows the state; retry the attach."
 
+  # Truecolour: the initial attach is the door the user actually sees, so it
+  # gets the same two-half handshake (client TERM + server RGB feature) as
+  # --attach — otherwise the TUI's truecolour backgrounds quantise to black.
   if tty -s 2>/dev/null; then
-    exec "${CONTAINER_RUNTIME}" exec -i -t --user dev "${DETACH_NAME}" \
-      tmux attach-session -t "${TMUX_SESSION}"
+    attach_tui
   fi
   echo "The detached TUI is running in the background."
   echo "   leave it  : Ctrl-B D (the agent keeps working)"

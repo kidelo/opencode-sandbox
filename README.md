@@ -216,7 +216,7 @@ ocs tui my-sandbox --status              # container + tmux state
 - `tmux` ships in the precompiled `ocs-base` image, so every profile supports this.
 - **Colour:** the pane renders in truecolour (`TERM=xterm-256color COLORTERM=truecolor`) and the output passes through to your terminal. If your terminal supports truecolour, the panels and background chrome stay in full colour; a plain 16-colour terminal still works (rendered in the 16-colour palette).
 - `--attach`/`--stop`/`--status` are management-only and take no resume flags; `-c`/`-s` combine only with the default mode and `--detach`.
-- **Truecolour:** the pane gets `TERM=xterm-256color` + `COLORTERM=truecolor`, so the TUI renders in truecolour inside tmux (tmux 3.x passes it through to a truecolour-capable terminal). If you upgraded an *existing* detached container, `ocs tui --stop` once and `ocs tui --detach` again to pick up the new session environment.
+- **Truecolour passthrough:** the door tells *both* sides of the tmux channel your terminal is RGB — the pane gets `TERM=xterm-256color` + `COLORTERM=truecolor` (so the TUI emits truecolour) and the attach client is given your real `TERM` (so the truecolour reaches your terminal instead of being quantised to 16/256). A plain 16-colour terminal is left on its palette. If you upgraded an *existing* detached container, `ocs tui --stop` once and `ocs tui --detach` again to pick up the new door logic.
 
 **Resuming an aborted session.** Session history is persisted between runs (it lives in the persistent opencode state, mounted at `/home/dev/.local/share/opencode`), so if a TUI run aborts you can pick it back up:
 
