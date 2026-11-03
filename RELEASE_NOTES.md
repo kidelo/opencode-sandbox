@@ -6,8 +6,9 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub releases: `RELEASE_V0.8.1-KIDELO`,
-`RELEASE_V0.8-KIDELO`, `RELEASE_V0.7.2-KIDELO` and `RELEASE_V0.7-KIDELO`
+Last published GitHub releases: `RELEASE_V0.8.2-KIDELO`,
+`RELEASE_V0.8.1-KIDELO`, `RELEASE_V0.8-KIDELO`,
+`RELEASE_V0.7.2-KIDELO` and `RELEASE_V0.7-KIDELO`
 (all 2026-11-03); v0.7.1 ships in the v0.7.2 push.
 Releases v0.2–v0.6 below are local milestones shipped in the repo without
 GitHub release tags.
@@ -129,6 +130,82 @@ None.
 - **Commits in range:** `bin/ocs-interactive`, `AGENTS.md`, `README.md`,
   `RELEASE_NOTES.md`
 - **Tag (published):** `RELEASE_V0.8.1-KIDELO` (2026-11-03)
+
+---
+
+## v0.8.2 — detached TUI: truecolour passes through to the terminal
+
+**Bug fix (v0.8 detached TUI).** Even with the v0.8.1 pane env the TUI's
+truecolour output was still being **quantised to 16/256 colours** as it crossed
+tmux — the panels and background chrome stayed "no colour". This is the second
+half of the truecolour chain.
+
+Root cause: tmux only passes truecolour (`38;2;…`/`48;2;…`) through to the
+client if *both* the tmux **server** *and* the tmux **client** are told the
+terminal is RGB-capable. The client here is the `tmux attach` process running
+inside the container, and `docker exec` forwards **no** environment — so it saw
+no `TERM` at all and tmux fell back to the 16-colour `xterm` (confirmed with
+`list-clients`: `client_termname = xterm`, no RGB feature).
+
+The fix has **two** mandatory halves, both in `bin/ocs-interactive`:
+
+1. **Client env** — the attach/exec now runs the tmux client with the caller's
+   real terminal: `… -e TERM=<your TERM> -e COLORTERM=<your COLORTERM> …`.
+   (The pane already got `TERM=xterm-256color COLORTERM=truecolor` from v0.8.1;
+   this fixes the *client* side of the channel.)
+2. **Server feature** — the server is taught that this terminal is RGB via
+   `tmux set -as terminal-features '<TERM>:RGB'`, baked into the long-lived
+   container's `OPCODE_CMD` and re-applied on every attach.
+
+Gated by `term_is_truecolor()`: only genuinely RGB-capable terminals get it
+(`xterm-256color`, `xterm-direct`, `alacritty`, `kitty`, `wezterm`, `foot*`,
+`rxvt-unicode*`, plus an explicit `COLORTERM` of `truecolor`/`TrueColor`/
+`24bit`). A bare 16-colour `xterm` is left untouched, so genuinely 16-colour
+terminals are not garbled.
+
+### Highlights
+
+- `bin/ocs-interactive`: the detached door now bakes both halves into the
+  container's `OPCODE_CMD`:
+  `tmux new-session -d -s ocs -e TERM=xterm-256color -e COLORTERM=truecolor …`
+  plus `tmux set -as terminal-features 'xterm-256color:RGB'` at start — and
+  re-applies both on every `ocs tui --attach`.
+- Verified **live end-to-end** on the real detached TUI: the pane stream now
+  carries **236 truecolour sequences** (`38;2;…`/`48;2;…`) reaching the
+  user's terminal, instead of being quantised to 16/256 colours.
+- Isolated A/B (same image, tmux 3.3a): server-feature-only → 0; `-e`-only →
+  0; **both halves → truecolour flows through** (proven with a disposable
+  gradient pane).
+
+### Breaking changes
+
+None.
+
+### Upgrade steps
+
+- **No rebuild needed.** The detached door is assembled at `docker run` time.
+  For an already-running detached container: `ocs tui --stop`, then
+  `ocs tui --detach` again so the new `OPCODE_CMD` (with both halves) applies.
+- The default one-shot door is unchanged.
+
+### Verification
+
+- Live `ocs tui --detach` → pane env `TERM=xterm-256color COLORTERM=truecolor
+  LANG=de_DE.UTF-8`, and the server's `tmux show-options` now lists
+  `xterm-256color:RGB`.
+- Client attach (with `-e TERM=xterm-256color -e COLORTERM=truecolor`) over the
+  pane stream: **236 truecolour sequences** captured in the raw stream
+  (`38;2;255;255;255`, `48;2;10;10;10`, …) — previously 0.
+- `term_is_truecolor()` gate tested on the three required cases
+  (`xterm-256color` w/o COLORTERM → allow; bare `xterm` → deny; COLORTERM set
+  → allow).
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean
+
+### Release metadata (v0.8.2)
+
+- **Base:** `d8cbcb6`
+- **Commits in range:** `bin/ocs-interactive`, `RELEASE_NOTES.md`, `README.md`
+- **Tag (published):** `RELEASE_V0.8.2-KIDELO` (2026-11-03)
 
 ---
 
