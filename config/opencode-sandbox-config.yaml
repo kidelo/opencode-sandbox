@@ -71,6 +71,7 @@ dockerfile: full
 # Starts EMPTY — no domains are allowed by default; add only what the project
 # needs. (Model traffic uses intranet-endpoints, not this list.)
 http-domain-whitelist:
+  - .example.com
   # - .github.com
   # - .npmjs.org
   # - .pypi.org
