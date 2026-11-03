@@ -46,7 +46,10 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -s /etc/squid/squid-whitelist.txt ]]; then
   echo ">> starting squid proxy (squid startup messages below are expected)"
-  squid -c "${_SQUID_CONF}"
+  # NOTE: the config path is a POSITIONAL argument to squid — `squid -c FILE`
+  # is an unrecognized-option FATAL. squid daemonizes (no -N), then the
+  # readiness curl below waits for it.
+  squid "${_SQUID_CONF}"
   timeout 30 bash -c 'until curl --silent --output /dev/null --max-time 1 http://127.0.0.1:3128; do sleep 0.2; done'
   echo ">> squid is ready"
 else

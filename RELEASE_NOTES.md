@@ -12,7 +12,58 @@ GitHub release tags.
 
 ---
 
-## v0.7 — OpenCode 2.2.5 pin + 2.2.x feature set *(this push)*
+## v0.7.1 — squid startup fix *(this push)*
+
+**Bug fix: squid was never starting in any project that uses a
+non-empty `http-domain-whitelist`.**
+
+`docker/entrypoint.sh` invoked `squid -c "${_SQUID_CONF}"`, but the
+config path is a **positional** argument to squid — `squid -c FILE` is
+an unrecognized option and aborts with `FATAL: '-c': unrecognized
+option or missing required argument` the moment the entrypoint reaches
+the proxy block. The bug stayed hidden in this repo's own sandbox
+because its `http-domain-whitelist` is empty (squid is skipped there);
+any project with whitelisted domains would have died at container
+start.
+
+### Highlights
+
+- `squid -c "${_SQUID_CONF}"` → `squid "${_SQUID_CONF}"` (one line in
+  `docker/entrypoint.sh` + a comment pinning the positional-argument
+  form so it is not "fixed back"), squid still daemonizes and the
+  entrypoint's readiness curl still waits for it
+
+### Breaking changes
+
+None — this only repairs a path that could not have worked before.
+
+### Upgrade steps
+
+- `ocs rebuild` (the entrypoint is baked into the image)
+
+### Verification
+
+- ✅ reproduced the bug on the v0.7 image: `squid -c …` → `FATAL:
+  '-c': unrecognized option` (container would have failed at start)
+- ✅ rebuilt the project image with the fix (bases reused from cache)
+- ✅ full entrypoint run with a non-empty whitelist:
+  `>> starting squid proxy … >> squid is ready`, no FATAL
+  (`--cap-add NET_ADMIN` added in the bare test invocation for the
+  firewall step — the real doors pass it via `build_run_flags`)
+- ✅ through the live proxy as `dev`: whitelisted `example.com` →
+  **200**; IP-literal `1.1.1.1` (rebinding-class attempt) → **403**
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+
+### Release metadata (v0.7.1)
+
+- **Base:** `ca4abfa` (v0.7 published)
+- **Commits in range:** `docker/entrypoint.sh` (squid invocation),
+  `RELEASE_NOTES.md`
+- **Next tag:** `RELEASE_V0.7.1-KIDELO` (when published)
+
+---
+
+## v0.7 — OpenCode 2.2.5 pin + 2.2.x feature set
 
 The sandbox now ships the newest OpenCode 2 release, **v2.2.5** (2026-10-30).
 The pinned CLI moves forward, the standalone-in-docker design and
@@ -96,7 +147,7 @@ first-run host — bases re-baked from scratch); the remaining smoke steps
 
 ### Release metadata (v0.7)
 
-- **Tag (planned):** `RELEASE_V0.7-KIDELO`
+- **Tag (published):** `RELEASE_V0.7-KIDELO`
 - **Base:** `3de35c3` (v0.6 TUI keybind doc fix)
 - **Commits in range:** `bin/ocs-rebuild-container` (version + `OCS_BASE_API`),
   `config/base.Dockerfile` (`ARG` default), `config/opencode.jsonc`
@@ -373,7 +424,8 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.7** | **OpenCode 2.2.5 pin** (latest) + standalone-in-docker & last-session resume re-verified + `compaction.buffer: 20%` shipped + `/goal` & `/schedule` awareness | `RELEASE_V0.7-KIDELO` (planned) |
+| **v0.7.1** | **squid startup fix** — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | `RELEASE_V0.7.1-KIDELO` (planned) |
+| v0.7 | **OpenCode 2.2.5 pin** (latest) + standalone-in-docker & last-session resume re-verified + `compaction.buffer: 20%` shipped + `/goal` & `/schedule` awareness | `RELEASE_V0.7-KIDELO` (published) |
 | v0.6 | Plan-mode door (`ocs plan`) + TUI Shift+Tab agent switching (verified live) + custom agents/skills (defaults + first-run seed) + `todo` tool verified on 2.1.2 | `RELEASE_V0.6-KIDELO` (planned) |
 | v0.5 | **OpenCode 1.x → 2.1.x migration** (doors, entrypoint auth, config shape, base, `TEST_API` 7) | `RELEASE_V0.5-KIDELO` (published) |
 | v0.4 | Extra hardening (seccomp / landlock / egress-audit / sensitive-paths / git-hook sink / squid rebinding) + test cases 24–29 | — (local) |
