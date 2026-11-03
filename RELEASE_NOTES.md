@@ -14,6 +14,49 @@ GitHub release tags.
 
 ---
 
+## v0.8.1 — detached TUI: truecolour under tmux
+
+**Bug fix (v0.8 detached TUI).** Inside tmux the TUI fell back to a
+16-colour profile, so its panel/background chrome disappeared. Root cause:
+tmux hands a new pane `TERM=screen` (its default), and the TUI's renderer
+(openTUI) then picks a 16-colour palette — regardless of the outer
+terminal's capabilities.
+
+### Highlights
+
+- `bin/ocs-interactive`: the detached door now starts the session as
+  `tmux new-session -d -s ocs -e TERM=xterm-256color -e COLORTERM=truecolor …`,
+  so the TUI emits truecolour, which tmux 3.x passes through to a
+  truecolour-capable client terminal (verified with `tmux pipe-pane`:
+  the pane stream carries `38;2;…`/`48;2;…` sequences)
+
+### Breaking changes
+
+None.
+
+### Upgrade steps
+
+- No rebuild needed (door-side change, applied at `docker run`). If a
+  detached container from v0.8 is already running, `ocs tui --stop` once and
+  `ocs tui --detach` again so the new session environment applies.
+
+### Verification
+
+- Isolated A/B (same image, tmux 3.3a): pane without the env pair → only
+  16-colour SGR; with the pair → the TUI writes truecolour
+  (`38;2;92;156;245`, `48;2;10;10;10` …) into the pane (`pipe-pane` capture)
+- Confirmed visually by the user on their truecolour terminal
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean
+
+### Release metadata (v0.8.1)
+
+- **Base:** `d8cbcb6` (v0.8 + bookkeeping)
+- **Commits in range:** `bin/ocs-interactive`, `AGENTS.md`, `README.md`,
+  `RELEASE_NOTES.md`
+- **Next tag:** `RELEASE_V0.8.1-KIDELO` (when published)
+
+---
+
 ## v0.8 — detached TUI: leave the terminal, the agent keeps working
 
 **Feature.** `ocs tui` gains an **optional** detached mode: the TUI runs inside a
@@ -641,6 +684,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
+| **v0.8.1** | **detached TUI truecolour** — pane starts with TERM=xterm-256color + COLORTERM=truecolor (the TUI's renderer fell back to 16-colour under tmux's default TERM=screen) | `RELEASE_V0.8.1-KIDELO` (planned) |
 | **v0.8** | **detached TUI** — `ocs tui --detach/--attach/--stop/--status`: TUI in tmux in a long-lived container, leave with Ctrl-B D, the agent keeps working; `tmux` in `ocs-base` | `RELEASE_V0.8-KIDELO` (published) |
 | **v0.7.2** | **squid under full hardening** — worker died under `cap-drop=ALL` + `no-new-privileges`; `CAP_DAC_OVERRIDE` added (bisected; CHOWN/FOWNER not sufficient) | `RELEASE_V0.7.2-KIDELO` (published) |
 | v0.7.1 | squid startup fix — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | shipped in the v0.7.2 push (commit `4d04452`) |

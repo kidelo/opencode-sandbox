@@ -241,9 +241,14 @@ fi
 # detaches the tmux CLIENT, while the tmux SERVER (and with it the TUI, its
 # in-process server and any running agent work) keeps going. tmux comes from
 # the precompiled ocs-base image (every profile has it).
+# Color: tmux hands the pane TERM=screen by default, and opencode's UI
+# (openTUI) then falls back to a 16-colour profile (its panels/backgrounds
+# disappear). Giving the pane TERM=xterm-256color + COLORTERM=truecolor makes
+# it emit truecolour, which tmux 3.x passes straight through to a truecolour
+# client terminal (verified via tmux pipe-pane).
 if [[ "${MODE}" == "detach" ]]; then
   build_run_flags
-  OPCODE_CMD="tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} '${OC_TUI}'; sleep infinity"
+  OPCODE_CMD="tmux has-session -t ${TMUX_SESSION} 2>/dev/null || tmux new-session -d -s ${TMUX_SESSION} -e TERM=xterm-256color -e COLORTERM=truecolor '${OC_TUI}'; sleep infinity"
 
   if detach_container_running; then
     echo "Detached TUI is already running: ${DETACH_NAME}"

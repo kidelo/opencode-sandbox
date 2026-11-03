@@ -215,6 +215,7 @@ ocs tui my-sandbox --status              # container + tmux state
 - `timeout:` does not apply to the long-lived container (like `ocs start`); resume a previous run with `--detach -c` / `--detach -s <id>`.
 - `tmux` ships in the precompiled `ocs-base` image, so every profile supports this.
 - `--attach`/`--stop`/`--status` are management-only and take no resume flags; `-c`/`-s` combine only with the default mode and `--detach`.
+- **Truecolour:** the pane gets `TERM=xterm-256color` + `COLORTERM=truecolor`, so the TUI renders in truecolour inside tmux (tmux 3.x passes it through to a truecolour-capable terminal). If you upgraded an *existing* detached container, `ocs tui --stop` once and `ocs tui --detach` again to pick up the new session environment.
 
 **Resuming an aborted session.** Session history is persisted between runs (it lives in the persistent opencode state, mounted at `/home/dev/.local/share/opencode`), so if a TUI run aborts you can pick it back up:
 
