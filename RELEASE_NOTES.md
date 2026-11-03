@@ -6,9 +6,9 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub releases: `RELEASE_V0.8-KIDELO`,
-`RELEASE_V0.7.2-KIDELO` and `RELEASE_V0.7-KIDELO` (all 2026-11-03);
-v0.7.1 ships in the v0.7.2 push.
+Last published GitHub releases: `RELEASE_V0.8.1-KIDELO`,
+`RELEASE_V0.8-KIDELO`, `RELEASE_V0.7.2-KIDELO` and `RELEASE_V0.7-KIDELO`
+(all 2026-11-03); v0.7.1 ships in the v0.7.2 push.
 Releases v0.2–v0.6 below are local milestones shipped in the repo without
 GitHub release tags.
 
@@ -53,7 +53,7 @@ None.
 - **Base:** `d8cbcb6` (v0.8 + bookkeeping)
 - **Commits in range:** `bin/ocs-interactive`, `AGENTS.md`, `README.md`,
   `RELEASE_NOTES.md`
-- **Next tag:** `RELEASE_V0.8.1-KIDELO` (when published)
+- **Tag (published):** `RELEASE_V0.8.1-KIDELO` (2026-11-03)
 
 ---
 
@@ -684,7 +684,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.8.1** | **detached TUI truecolour** — pane starts with TERM=xterm-256color + COLORTERM=truecolor (the TUI's renderer fell back to 16-colour under tmux's default TERM=screen) | `RELEASE_V0.8.1-KIDELO` (planned) |
+| **v0.8.1** | **detached TUI truecolour** — pane starts with TERM=xterm-256color + COLORTERM=truecolor (the TUI's renderer fell back to 16-colour under tmux's default TERM=screen) | `RELEASE_V0.8.1-KIDELO` (published) |
 | **v0.8** | **detached TUI** — `ocs tui --detach/--attach/--stop/--status`: TUI in tmux in a long-lived container, leave with Ctrl-B D, the agent keeps working; `tmux` in `ocs-base` | `RELEASE_V0.8-KIDELO` (published) |
 | **v0.7.2** | **squid under full hardening** — worker died under `cap-drop=ALL` + `no-new-privileges`; `CAP_DAC_OVERRIDE` added (bisected; CHOWN/FOWNER not sufficient) | `RELEASE_V0.7.2-KIDELO` (published) |
 | v0.7.1 | squid startup fix — `squid -c FILE` FATAL on any whitelisted-domain project; config path is positional now | shipped in the v0.7.2 push (commit `4d04452`) |
