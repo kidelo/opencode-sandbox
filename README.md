@@ -214,6 +214,7 @@ ocs tui my-sandbox --status              # container + tmux state
 - Reconnect from any terminal with `--attach` (works headless-less: the starting `--detach` command also just *starts* it when there is no TTY, e.g. from a script).
 - `timeout:` does not apply to the long-lived container (like `ocs start`); resume a previous run with `--detach -c` / `--detach -s <id>`.
 - `tmux` ships in the precompiled `ocs-base` image, so every profile supports this.
+- **Colour:** the pane renders in truecolour (`TERM=xterm-256color COLORTERM=truecolor`) and the output passes through to your terminal. If your terminal supports truecolour, the panels and background chrome stay in full colour; a plain 16-colour terminal still works (rendered in the 16-colour palette).
 - `--attach`/`--stop`/`--status` are management-only and take no resume flags; `-c`/`-s` combine only with the default mode and `--detach`.
 - **Truecolour:** the pane gets `TERM=xterm-256color` + `COLORTERM=truecolor`, so the TUI renders in truecolour inside tmux (tmux 3.x passes it through to a truecolour-capable terminal). If you upgraded an *existing* detached container, `ocs tui --stop` once and `ocs tui --detach` again to pick up the new session environment.
 
