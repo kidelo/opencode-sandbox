@@ -6,10 +6,10 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub releases: `RELEASE_V0.8.2-KIDELO`,
-`RELEASE_V0.8.1-KIDELO`, `RELEASE_V0.8-KIDELO`,
+Last published GitHub releases: `RELEASE_V0.9-KIDELO` (2026-11-04),
+`RELEASE_V0.8.2-KIDELO`, `RELEASE_V0.8.1-KIDELO`, `RELEASE_V0.8-KIDELO`,
 `RELEASE_V0.7.2-KIDELO` and `RELEASE_V0.7-KIDELO`
-(all 2026-11-03); v0.7.1 ships in the v0.7.2 push.
+(the latter five all 2026-11-03); v0.7.1 ships in the v0.7.2 push.
 Releases v0.2–v0.6 below are local milestones shipped in the repo without
 GitHub release tags.
 
@@ -114,7 +114,7 @@ None. (One-time cost: both shared base images re-build once on the next
 - **Commits in range:** `config/base.Dockerfile`, `bin/ocs-rebuild-container`,
   `test/cases/30-model-pin.sh`, `README.md`, `HOWTO.md`, `AGENTS.md`,
   `RELEASE_NOTES.md`
-- **Tag:** `RELEASE_V0.9-KIDELO` (unpublished)
+- **Tag (published):** `RELEASE_V0.9-KIDELO` (2026-11-04)
 
 ---
 
@@ -877,7 +877,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.9** | **locales baked into the base images** (host-detected, `OCS_LOCALES`/`OCS_DEFAULT_LOCALE` build args, `ocs-base-locale` label, `OCS_BASE_API` 7→8) + **the model pin is now a tested contract** (case 30: catalog resolves to exactly the pinned model, context limit present) + 6 stale sandbox configs synced (local) | `RELEASE_V0.9-KIDELO` (unpublished) |
+| **v0.9** | **locales baked into the base images** (host-detected, `OCS_LOCALES`/`OCS_DEFAULT_LOCALE` build args, `ocs-base-locale` label, `OCS_BASE_API` 7→8) + **the model pin is now a tested contract** (case 30: catalog resolves to exactly the pinned model, context limit present) + 6 stale sandbox configs synced (local) | `RELEASE_V0.9-KIDELO` (published) |
 | **v0.8.2** | **detached TUI truecolour passthrough** — tmux needs BOTH the server's `terminal-features …:RGB` AND a client with real `TERM`; shared `attach_tui()` applies both halves at every attach site (the `--detach` initial attach was a bare attach → truecolour backgrounds quantised to black) | `RELEASE_V0.8.2-KIDELO` (published) |
 | **v0.8.1** | **detached TUI truecolour** — pane starts with TERM=xterm-256color + COLORTERM=truecolor (the TUI's renderer fell back to 16-colour under tmux's default TERM=screen) | `RELEASE_V0.8.1-KIDELO` (published) |
 | **v0.8** | **detached TUI** — `ocs tui --detach/--attach/--stop/--status`: TUI in tmux in a long-lived container, leave with Ctrl-B D, the agent keeps working; `tmux` in `ocs-base` | `RELEASE_V0.8-KIDELO` (published) |
