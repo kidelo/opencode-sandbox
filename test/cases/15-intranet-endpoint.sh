@@ -17,6 +17,11 @@ skip_if_empty HARNESS_EP_IP HARNESS_EP_PORT
 
 EP="${HARNESS_EP_IP}"
 PORT="${HARNESS_EP_PORT}"
+# Invariant (M-3): the harness EP must sit on the subnet's LAST usable host
+# (.254) — Docker IPAM allocates from the front of the pool, so a front IP
+# (e.g. the old .50) could be handed to an auto-assigned container on the
+# net (the test container itself) and collide with the fixed listener.
+[[ "${EP##*.}" == "254" ]] || fail "harness EP ${EP} is not <subnet>.254 (must be the subnet's last usable host)"
 # +1 must stay in valid port range for the contrast probe.
 if (( PORT >= 65535 )); then
   CONTRAST=1

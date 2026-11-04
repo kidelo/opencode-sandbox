@@ -23,8 +23,11 @@ carry the security weight.
 
 Exit codes:
   0  ruleset applied, or no-op (kernel lacks Landlock)
-  1  Landlock requested but failed to apply (aborts the container so the
-     user's `landlock: on` is not silently ignored)
+  1  Landlock requested but failed to apply. The entrypoint does NOT abort
+     the container on this — landlock is opt-in defence-in-depth, not a
+     fail-closed gate: the entrypoint records the failure in
+     /run/.landlock-failed and the container continues with the other
+     hardening layers in force (the test suite asserts on the marker).
 """
 
 import ctypes
@@ -143,8 +146,12 @@ def apply(rw_paths, ro_paths):
         for p in rw_paths:
             add(p, FS_ALL)
 
-        # no_new_privs (kernel requires it before restrict_self for unprivileged;
-        # we have CAP_SYS_ADMIN as root, but set it anyway — it's idempotent).
+        # no_new_privs: the kernel REQUIRES it to be set before
+        # landlock_restrict_self. The sandbox container already sets it
+        # (--security-opt no-new-privileges:true), so this is a no-op there;
+        # it is set anyway so the helper also works when invoked standalone.
+        # (The container does NOT hold CAP_SYS_ADMIN — caps are dropped — so
+        # no_new_privs is mandatory for the restrict call, not a privilege.)
         libc.prctl.restype = ctypes.c_int
         libc.prctl.argtypes = [ctypes.c_int] * 5
         libc.prctl(38, 1, 0, 0, 0)  # PR_SET_NO_NEW_PRIVS

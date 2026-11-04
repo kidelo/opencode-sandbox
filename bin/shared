@@ -395,6 +395,17 @@ ensure_sandbox_network() {
   if [[ -z "${existing_sub}" ]]; then
     "${CONTAINER_RUNTIME}" network create --subnet "${subnet}" "${net_name}" >/dev/null
   elif [[ "${existing_sub}" != "${subnet}" ]]; then
+    # Recreating is only safe with NO container attached to the network
+    # (removing it would detach/kill one). Fail with a clear error instead of
+    # silently orphaning a running container.
+    attached="$("${CONTAINER_RUNTIME}" ps -q --filter "network=${net_name}" 2>/dev/null || true)"
+    if [[ -n "${attached}" ]]; then
+      echo "ERROR: cannot recreate network ${net_name} (subnet ${existing_sub} -> ${subnet}): a container is still attached." >&2
+      echo "  attached:" >&2
+      "${CONTAINER_RUNTIME}" ps --filter "network=${net_name}" --format '    {{.ID}}  {{.Names}}' >&2 || true
+      echo "  Stop and remove them first (e.g. 'ocs kill' or 'docker rm <name>'), then re-run." >&2
+      return 1
+    fi
     echo "Recreating network ${net_name}: subnet ${existing_sub} -> ${subnet} (config changed)" >&2
     "${CONTAINER_RUNTIME}" network rm "${net_name}" >/dev/null 2>&1 || true
     "${CONTAINER_RUNTIME}" network create --subnet "${subnet}" "${net_name}" >/dev/null
@@ -760,9 +771,14 @@ build_run_flags() {
       [[ -z "${entry}" ]] && continue
       local container_name="${entry%%=*}"
       local host_name="${entry#*=}"
-      # Defense in depth: skip (not crash) any entry whose host-side name is
-      # not a valid shell variable name — a stray inline comment or other
-      # malformed value must never take every container start down with it.
+      # Defense in depth: skip (not crash) any entry whose name (container-
+      # side or host-side) is not a valid variable name — a stray inline
+      # comment or other malformed value must never take every container
+      # start down with it.
+      if [[ ! "${container_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        RUN_LOG+=("    env: (skipped — invalid container variable name '${container_name}' in '${entry}')")
+        continue
+      fi
       if [[ ! "${host_name}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
         RUN_LOG+=("    env: ${container_name} (skipped — invalid host variable name '\${${host_name}}')")
         continue
@@ -788,6 +804,13 @@ build_run_flags() {
   if [[ -f "${ENV_STATIC_FILE}" ]]; then
     while IFS= read -r assignment || [[ -n "${assignment}" ]]; do
       [[ -z "${assignment}" ]] && continue
+      # Defense in depth: skip (not crash) a malformed entry (no '=', or an
+      # invalid name) — docker rejects such '-e' values only at container
+      # start, which would take the whole door down.
+      if [[ ! "${assignment}" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+        RUN_LOG+=("    env: (skipped — invalid static entry '${assignment}')")
+        continue
+      fi
       RUN_FLAGS+=(--env "${assignment}")
       RUN_LOG+=("    env: ${assignment} (static)")
     done < "${ENV_STATIC_FILE}"
@@ -805,6 +828,17 @@ build_run_flags() {
       # resolved; nothing -- no command sub, no arithmetic -- is ever executed,
       # unlike the previous `eval`, which would run code from the config file).
       host_dir="$(strip_quotes "$(expand_env_path "${host_dir}")")"
+      # Defense in depth: skip (and log) a malformed entry — docker rejects
+      # an empty source or a relative destination only at container start,
+      # which would take the whole door down.
+      if [[ -z "${host_dir}" || -z "${container_dir}" || "${container_dir}" != /* ]]; then
+        RUN_LOG+=("    mount: (skipped — invalid entry '${entry}'; expected 'host-dir=/abs/container/path')")
+        continue
+      fi
+      if [[ ! -d "${host_dir}" ]]; then
+        RUN_LOG+=("    mount: (skipped — host dir not found: ${host_dir})")
+        continue
+      fi
       RUN_FLAGS+=(-v "${host_dir}:${container_dir}")
       RUN_LOG+=("    mount: ${host_dir} -> ${container_dir}")
     done < "${VOLUME_MOUNTS_FILE}"
@@ -821,6 +855,15 @@ build_run_flags() {
       local ro_container_dir="${entry%%=*}"
       local ro_host_dir="${entry#*=}"
       ro_host_dir="$(strip_quotes "$(expand_env_path "${ro_host_dir}")")"
+      # Defense in depth: same skip-and-log rule as volume-mounts above.
+      if [[ -z "${ro_host_dir}" || -z "${ro_container_dir}" || "${ro_container_dir}" != /* ]]; then
+        RUN_LOG+=("    mount (ro): (skipped — invalid entry '${entry}'; expected 'host-dir=/abs/container/path')")
+        continue
+      fi
+      if [[ ! -d "${ro_host_dir}" ]]; then
+        RUN_LOG+=("    mount (ro): (skipped — host dir not found: ${ro_host_dir})")
+        continue
+      fi
       RUN_FLAGS+=(-v "${ro_host_dir}:${ro_container_dir}:ro")
       RUN_LOG+=("    mount (ro): ${ro_host_dir} -> ${ro_container_dir}")
     done < "${READ_ONLY_MOUNTS_FILE}"

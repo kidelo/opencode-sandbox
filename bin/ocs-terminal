@@ -33,17 +33,26 @@ if ! "${CONTAINER_RUNTIME}" inspect -f '{{.State.Running}}' "${CONTAINER_NAME}" 
   exit 1
 fi
 
-# docker exec does not inherit the entrypoint's env; pass the client-side
-# password and the port explicitly. OpenCode 2 splits auth by role: the SERVER
-# reads OPENCODE_SERVER_PASSWORD (set by the entrypoint), while a CLIENT that
-# connects via --server presents the password through OPENCODE_PASSWORD. This
-# door's TUI is a client, so it needs OPENCODE_PASSWORD. It just connects to the
-# container's existing foreground `opencode serve` (started by ocs start), so it
-# shares sessions with the browser client and no daemon is spawned here.
-# SC2016: intentional — ${OPENCODE_PORT} must expand in the dev shell, not here.
+# docker exec does not inherit the entrypoint's env. OpenCode 2 splits auth
+# by role: the SERVER reads OPENCODE_SERVER_PASSWORD (set by the entrypoint),
+# while a CLIENT that connects via --server presents the password through
+# OPENCODE_PASSWORD. This door's TUI is a client, so it needs
+# OPENCODE_PASSWORD. It just connects to the container's existing foreground
+# `opencode serve` (started by ocs start), so it shares sessions with the
+# browser client and no daemon is spawned here.
+#
+# The password is read INSIDE the container (docker exec runs as root by
+# default; /opencode-password is root:root 0600) and handed to the TUI via
+# the shell's environment — it never appears on the host `ps` cmdline (a
+# `-e OPENCODE_PASSWORD=<secret>` would) nor in the container's argv (the
+# value lives in a shell variable, unset before the exec; gosu drops root→dev
+# with all capabilities, so the TUI process itself never sees the file).
+# OPENCODE_PORT is still passed as -e (not secret) and expands in the
+# in-container shell.
+# SC2016: intentional — ${OPENCODE_PORT} must expand in the in-container
+# shell, not here.
 # shellcheck disable=SC2016
 exec "${CONTAINER_RUNTIME}" exec -it \
-  -e "OPENCODE_PASSWORD=$(cat "${OPENCODE_PASSWORD_FILE}")" \
   -e "OPENCODE_PORT=${PORT}" \
   "${CONTAINER_NAME}" \
-  gosu dev bash -c 'exec opencode --server "http://127.0.0.1:${OPENCODE_PORT:-4096}"'
+  bash -c 'pw="$(cat /opencode-password)"; export OPENCODE_PASSWORD="${pw}"; unset pw; exec gosu dev opencode --server "http://127.0.0.1:${OPENCODE_PORT:-4096}"'

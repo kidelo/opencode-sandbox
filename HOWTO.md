@@ -71,7 +71,7 @@ ocs rebuild my-sandbox
 What it does:
 
 1. Reads `sandbox-name` from `config/opencode-sandbox-config.yaml` and combines it with a short hash of the project root path to form a `SANDBOX_ID` (e.g. `my-project-a3f92c`).
-2. Creates the per-project tree `<project>/.sandbox/{build,state}/` and generates a random web-server password in `build/opencode-password`.
+2. Creates the per-project tree `<project>/.sandbox/{build,state}/`; generates a random web-server password in `build/opencode-password` **only if one does not exist yet** (a rebuild reuses the existing password — it never rotates, so already-authenticated clients keep working; delete the file to force a new one).
 3. Extracts the config into build artifacts: domain whitelist, host ports, intranet endpoints, env passthrough, volume mounts — and the sandbox network CIDR range.
 4. Ensures the two **precompiled base images** exist on this host (building them once if they're missing or stale): `ocs-base` (the common packages + `dev` user + OpenCode download, from `config/base.Dockerfile`) and — for the `full` profile — `ocs-base-full` (which adds the dev toolchain, from `config/base-full.Dockerfile`).
 5. Builds the Docker image `ocs-<SANDBOX_ID>` by layering the thin per-project tail (squid/firewall config, password, `entrypoint.sh`) on top of the right base, from the profile named by the `dockerfile:` key (`config/Dockerfile.minimal` / `Dockerfile.full`).

@@ -39,7 +39,7 @@ EXTRA_TEST_MOUNTS=(
 # positive-egress targets into its allow-lists via build args, so cases can
 # verify that a LISTED endpoint is actually reachable (not only that
 # unlisted ones are blocked):
-#   EP   — <subnet>.50 on this sandbox network : HARNESS_EP_PORT
+#   EP   — <subnet>.254 on this sandbox network : HARNESS_EP_PORT
 #          (served by a listener container; tests intranet-endpoints)
 #   HOST — host-published port HARNESS_HOST_PORT, reached via docker.host
 #          (served by a listener container; tests host-ports)
@@ -55,7 +55,11 @@ SUBNET="$(derive_sandbox_subnet)" || {
 HARNESS_EP_PORT="${HARNESS_EP_PORT:-8765}"
 HARNESS_HOST_PORT="${HARNESS_HOST_PORT:-8766}"
 SUBNET_BASE="${SUBNET%/*}"
-EP_IP="${SUBNET_BASE%.0}.50"
+# .254 is the subnet's LAST usable host: Docker IPAM allocates addresses
+# from the FRONT of the pool, so an auto-assigned container on this net
+# (the test container itself, a peer, a leftover) can never collide with
+# the fixed listener IP.
+EP_IP="${SUBNET_BASE%.0}.254"
 # ocs-test-api: manually-bumped harness API version, asserted by
 # image_is_current before the cached test image is reused. Bump when the
 # harness mechanism changes (e.g. v2 added the multi-port listener and
@@ -76,8 +80,14 @@ EP_IP="${SUBNET_BASE%.0}.50"
 # v8 re-bakes the in-image squid policy files as world-readable 0644
 # (cases 04/20/27 read them as dev; /opencode-password stays 0600) and the
 # peer/listener harness doors now use the single-source CAP_FLAGS, so a
-# non-empty whitelist no longer crash-loops them (cases 11/15/16).
-TEST_API="8"
+# non-empty whitelist no longer crash-loops them (cases 11/15/16); v9 moves
+# the harness EP listener to the subnet's last usable host (<subnet>.254 —
+# Docker IPAM allocates from the front, so it can never collide with an
+# auto-assigned container on the net, such as the test container itself);
+# v10 pins that invariant in the suite — case 15 now fails if the harness EP
+# is not <subnet>.254 (re-baking keeps the cached test image self-consistent
+# with the current suite).
+TEST_API="10"
 HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API}"
 
 # Rebuild only when the cached image is missing or was built before the
@@ -111,6 +121,53 @@ TEST_CONTAINER="${CONTAINER_NAME}-test-$$"
 build_run_flags
 
 # ---------------------------------------------------------------------------
+# Cleanup, armed BEFORE the peer and listener containers are started, so a
+# crash/abort at any point (including mid-harness-setup) still tears down
+# everything that exists. Every variable is ${:-}-guarded so the handler
+# never aborts under `set -u` when it fires early.
+# ---------------------------------------------------------------------------
+stop_and_remove_peer() {
+  if [[ -n "${PEER_NAME:-}" ]]; then
+    "${CONTAINER_RUNTIME}" stop "${PEER_NAME}" >/dev/null 2>&1 || true
+    "${CONTAINER_RUNTIME}" rm -f "${PEER_NAME}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${PEER_NET:-}" ]]; then
+    "${CONTAINER_RUNTIME}" network rm "${PEER_NET}" >/dev/null 2>&1 || true
+  fi
+}
+
+stop_and_remove_listeners() {
+  if [[ -n "${LST_EP_NAME:-}" ]]; then
+    "${CONTAINER_RUNTIME}" stop "${LST_EP_NAME}" >/dev/null 2>&1 || true
+    "${CONTAINER_RUNTIME}" rm -f "${LST_EP_NAME}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${LST_HOST_NAME:-}" ]]; then
+    "${CONTAINER_RUNTIME}" stop "${LST_HOST_NAME}" >/dev/null 2>&1 || true
+    "${CONTAINER_RUNTIME}" rm -f "${LST_HOST_NAME}" >/dev/null 2>&1 || true
+  fi
+  # FWD_MOUNT_DIR may be unset if we fail before the temp dir is created
+  # (the EXIT trap is armed above that point); the :- guard keeps the
+  # handler from aborting under `set -u` mid-cleanup.
+  if [[ -n "${FWD_MOUNT_DIR:-}" ]]; then
+    rm -rf -- "${FWD_MOUNT_DIR}" 2>/dev/null || true
+  fi
+}
+
+cleanup_test() {
+  stop_and_remove_peer
+  stop_and_remove_listeners
+  echo
+  "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true
+  "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true
+}
+trap cleanup_test EXIT
+# Convert INT/TERM into a normal exit so the EXIT trap above runs — an
+# untrapped fatal signal kills the shell without running EXIT traps.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# ---------------------------------------------------------------------------
 # Peer container for case 11 (two-container isolation): a second sandboxed
 # container on a SCRATCH network (neither the sandbox net nor the default
 # bridge) that runs a realistic entrypoint (firewall + root→dev drop). The
@@ -138,7 +195,7 @@ if "${CONTAINER_RUNTIME}" run -d --init \
       PEER_STARTED=1
       break
     fi
-    sleep 0.5
+    sleep 1
   done
   # shellcheck disable=SC2016  # $n/$c are docker Go-template vars, not shell
   PEER_IP="$("${CONTAINER_RUNTIME}" inspect -f '{{range $n, $c := .NetworkSettings.Networks}}{{$c.IPAddress}} {{end}}' "${PEER_NAME}" 2>/dev/null | awk '{print $1}')"
@@ -148,12 +205,6 @@ if [[ "${PEER_STARTED}" -eq 1 ]]; then
 else
   echo "WARNING: peer container could not be started — case 11 will SKIP"
 fi
-
-stop_and_remove_peer() {
-  "${CONTAINER_RUNTIME}" stop "${PEER_NAME}" >/dev/null 2>&1 || true
-  "${CONTAINER_RUNTIME}" rm -f "${PEER_NAME}" >/dev/null 2>&1 || true
-  "${CONTAINER_RUNTIME}" network rm "${PEER_NET}" >/dev/null 2>&1 || true
-}
 
 # ---------------------------------------------------------------------------
 # Positive-egress listeners. Each serves one baked allow-rule so a case can
@@ -207,21 +258,6 @@ if [[ "${HOST_LISTENER_UP}" -eq 1 ]]; then
 else
   echo "WARNING: host-port listener could not be started — case 16 will SKIP"
 fi
-
-stop_and_remove_listeners() {
-  "${CONTAINER_RUNTIME}" stop "${LST_EP_NAME}" >/dev/null 2>&1 || true
-  "${CONTAINER_RUNTIME}" rm -f "${LST_EP_NAME}" >/dev/null 2>&1 || true
-  "${CONTAINER_RUNTIME}" stop "${LST_HOST_NAME}" >/dev/null 2>&1 || true
-  "${CONTAINER_RUNTIME}" rm -f "${LST_HOST_NAME}" >/dev/null 2>&1 || true
-  # FWD_MOUNT_DIR may be unset if we fail before the temp dir is created
-  # (the EXIT trap is armed above that point); the :- guard keeps the
-  # handler from aborting under `set -u` mid-cleanup.
-  if [[ -n "${FWD_MOUNT_DIR:-}" ]]; then
-    rm -rf -- "${FWD_MOUNT_DIR}" 2>/dev/null || true
-  fi
-}
-
-trap 'stop_and_remove_peer; stop_and_remove_listeners; echo; "${CONTAINER_RUNTIME}" stop "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rm -f "${TEST_CONTAINER}" >/dev/null 2>&1 || true; "${CONTAINER_RUNTIME}" rmi "${TEST_IMAGE}" >/dev/null 2>&1 || true' EXIT
 
 CIDR="$(tr -d '[:space:]' < "${SANDBOX_CIDR_FILE}" 2>/dev/null || echo 10.77.0.0/16)"
 
@@ -327,6 +363,8 @@ done
 
 echo "================================"
 echo "summary: ${pass_count} passed, ${fail_count} failed, ${skip_count} skipped"
+echo "  tiers: 08/09 are the AI-model SMOKE tier (they SKIP when the model endpoint"
+echo "         is unreachable); the other cases are the deterministic core."
 if [[ ${fail_count} -gt 0 ]]; then
   echo "failed cases: ${failed_cases[*]}"
   echo "A security check failed - removing the test image so only known-good builds are used."

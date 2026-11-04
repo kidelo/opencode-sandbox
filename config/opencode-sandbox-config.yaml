@@ -93,6 +93,8 @@ intranet-endpoints:
   # - 10.0.0.5:3306
   # Example: your local model server (Ollama etc.) — fill in your own ip:port,
   # then run `ocs rebuild`.
+  # CHANGE-ME: this repo ships a self-hosted Ollama address; replace with
+  # your own endpoint (it must match opencode.jsonc's provider baseURL).
   - 192.168.0.139:11434
 
 # Host env vars forwarded into the container.

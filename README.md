@@ -157,12 +157,12 @@ ocs init -y --no-build my-sandbox                       # create the project, sk
 
 ### `ocs rebuild <name>`
 
-Prepares build artifacts and rebuilds the Docker image. Run this whenever you want a fresh image (new password, updated `config/opencode-sandbox-config.yaml`, etc.).
+Prepares build artifacts and rebuilds the Docker image. Run this whenever you want a fresh image (updated `config/opencode-sandbox-config.yaml`, etc.).
 
 - Reads `sandbox-name` from `config/opencode-sandbox-config.yaml` and combines it with a short hash of the project root path to form a `SANDBOX_ID` (e.g. `my-project-a3f92c`), then names the container `ocs-<SANDBOX_ID>`
 - Creates `<project>/.sandbox/build/` for build artifacts and `<project>/.sandbox/state/` for persistent state
-- Generates a random server password saved to `<project>/.sandbox/build/opencode-password` with owner-only permissions
-- Parses `config/opencode-sandbox-config.yaml` into derived build artifacts
+- Uses the server password in `<project>/.sandbox/build/opencode-password` (owner-only permissions) — **rebuilds never rotate it**: an existing password is reused, so already-authenticated clients keep working across rebuilds. It is generated only on the first build; delete the file first (or run `ocs clean`) to force a new one
+- Parses `config/opencode-sandbox-config.yaml` into derived build artifacts — all config-derived artifacts are validated **and then committed as a set** (renamed into the build dir in one pass): a rebuild that aborts during validation (bad port, CIDR, policy value, …) leaves the previously committed artifact set intact instead of truncated files
 - Builds the Docker image
 
 ### `ocs start <name>`
@@ -194,6 +194,8 @@ Opens the browser with credentials embedded in the URL (basic auth) on macOS or 
 ### `ocs terminal <name>`
 
 Attaches an OpenCode terminal session to the running web container — **from inside it**. The door `docker exec`s a TUI into the web container pointed at the in-container server (`opencode --server http://127.0.0.1:$OPENCODE_PORT`), so it shares sessions with the browser UI and never requires an opencode install on the host.
+
+The server password is read **inside** the container (root reads `/opencode-password`, `root:root 0600`) and handed to the TUI via the environment — it never appears on the host `ps` command line or in `docker inspect`.
 
 ### `ocs tui [name] [resume-flags] [mode]`
 
@@ -245,6 +247,7 @@ ocs run my-sandbox prompt.md -f context.md   # extra args pass through to `openc
 ```
 
 - **First-arg disambiguation:** if the first argument is a known sandbox project it is treated as the *name* and the next argument as the *prompt*; otherwise the first argument is the *prompt* (file or inline) and the project is resolved from the current directory. See `ocs list` for project names.
+- **Typo guard:** if the first argument *looks like* a project name but no such project exists and a **close one does** (edit distance ≤ 2, e.g. `api-gatwy` → `api-gateway`), the door fails fast with a `Did you mean …?` suggestion and the project list — instead of silently treating the typo as an inline prompt.
 - The model is **always pinned** to the configured sandbox model (config `model` + `enabled_providers`, plus an explicit `-m` on the CLI) — it cannot be switched in-session.
 - `webfetch`/`websearch` are **denied by default** by the opencode config; all web egress additionally has to pass the Squid/iptables firewall.
 - A prompt file **inside** the workspace is read in place; a file **outside** is mounted into the container read-only for that run. An **inline** prompt is written to a temp file, mounted read-only for the run, and removed afterward.
@@ -275,12 +278,14 @@ Runs the sandbox security test suite. **No running container needed** — `ocs t
 
 The suite has five kinds of checks (30 cases in total):
 - **Deterministic** — asserts the container is not running as root, that `/etc/shadow` and other sensitive files are unreadable, that `/usr` is not writable, that **no docker escape channel exists** (no socket, no `docker`/`podman` CLI), that the sandbox is L2-isolated on its dedicated network (its own `/24` inside `sandbox-network-cidr`), that direct connections to endpoints not in `intranet-endpoints` / `host-ports` are dropped by the firewall, that **resource limits** (memory, CPU, process count, single-file size, **open file descriptors**) plus `no-new-privileges` are actually enforced, that the **rootfs is read-only** with a sized `/tmp` tmpfs (and the workspace + state binds remain writable), that **IPv6 is disabled** in the namespace, that the **DNS-tunnel gate** is configured as `agent-dns` states (dev-uid `:53` dropped while squid keeps its proxy path), that **QUIC/DoT/DoH UDP/TCP (UDP:443, UDP:853, TCP:853, TCP:8853) are blocked for the dev uid** even if a future ACCEPT is accidentally added, that `config/opencode.jsonc` is mounted read-only **and that it actually pins the model catalog** (`opencode models` resolves to exactly the config's pinned model — the built-in free catalog is gone — and the config carries a numeric context limit), that `/workspace` is the writable dir, that the configured `opencode-port` reaches the run environment, that squid is running exactly when `http-domain-whitelist` is non-empty (state consistency), that **auto-exec host-side paths** (`.git/hooks`, `.git/config`, `.husky`, `.vscode`, `.github/workflows`, `.devcontainer`, plus any `sensitive-paths:` entries) are **pinned read-only over the rw workspace**, that **`git commit` cannot fire plugins / planted hooks** (the in-image system gitconfig points `core.hooksPath` to a null sink), that **squid cannot be used to reach the AWS metadata IP, loopback, or any private/link-local range** via IP-literal, DNS rebinding, or `dst` ACL bypass, that **Docker's default seccomp profile** is still attached (mode 2) unless the project explicitly `seccomp: off`s, and that the **Landlock helper ran** when `landlock: on` is set (with a machine-readable `/run/.landlock-{applied,skipped,failed,off}` marker).
-- **Positive egress (the allowed path works)** — proves a **listed** endpoint is actually reachable, not only that unlisted ones are blocked: `ocs test` bakes two harness targets into the *test image only* (via build args in `Dockerfile.test`) and starts short-lived listener containers for them — an **intranet endpoint** `<sandbox-net>.50:8765` (the case must connect to it, and to the adjacent unlisted port it must *not* be able to) and a **host port** `docker.host:8766` (same positive/negative contrast). These rules exist only in the `ocs-<SANDBOX_ID>-test` image and its two listener containers, both removed with the test image — the working image's firewall is never changed.
+- **Positive egress (the allowed path works)** — proves a **listed** endpoint is actually reachable, not only that unlisted ones are blocked: `ocs test` bakes two harness targets into the *test image only* (via build args in `Dockerfile.test`) and starts short-lived listener containers for them — an **intranet endpoint** `<sandbox-net>.254:8765` (the subnet's last usable host — Docker's IPAM allocates from the front of the pool, so it can never collide with an auto-assigned container on the net) (the case must connect to it, and to the adjacent unlisted port it must *not* be able to) and a **host port** `docker.host:8766` (same positive/negative contrast). These rules exist only in the `ocs-<SANDBOX_ID>-test` image and its two listener containers, both removed with the test image — the working image's firewall is never changed.
 - **Run-wiring (env / mounts)** — `ocs test` injects a random sentinel env var (and a fixed one) and a temp dir — pre-filled with a sentinel file — mounted read-write at `/mnt/ocs-fwd`, and the cases assert the env value and the sentinel file both arrive intact (plus that the mount is writable): the same env / `-v` plumbing used by `env-passthrough` / `env` / `volume-mounts` / `read-only-mounts`.
 - **Multi-container** — starts a real second container on a scratch network and asserts that the sandbox cannot resolve its name or connect to its IP: two running sandboxes never see each other.
 - **AI-agent red-team** — drives the configured model (via `opencode run`) to actively try six escapes (proxy bypass, direct egress, privilege escalation, root-file read, system write, secret read). The agent writes a JSON report to `/tmp` inside the container; the runner then fails if the agent reports any attack as `succeeded`.
 
-If a case's optional dependency is unavailable (the AI-agent case cannot reach the configured model endpoint, a listener could not be started, a tool is missing in the image, …), it SKIPs with a hint; the deterministic cases still provide the security signal.
+**Two tiers.** Cases **08/09** are the **AI-model smoke tier** — they need a reachable model endpoint and SKIP when it is unreachable. The other **28 cases** are the **deterministic core** and pass/fail independent of any model. The `ocs test` summary reports the tier split, so a 08/09 SKIP is expected without a model endpoint — the deterministic signal stands on its own.
+
+If a case's optional dependency is unavailable (a listener could not be started, a tool is missing in the image, …), it SKIPs with a hint; the deterministic cases still provide the security signal.
 
 > **Note:** On a **pass** the test image (`ocs-<SANDBOX_ID>-test`) is kept so a re-run is fast; on a **fail** (or crash) it is removed so only known-good builds remain. The working image (`ocs-<SANDBOX_ID>`) is untouched either way. `ocs clean` / `ocs kill` remove the test image too.
 
@@ -510,6 +515,7 @@ sensitive-paths:        # extra workspace sub-paths to pin read-only
 - **Disabled by default** — the list ships empty, so the container cannot reach any host port until you add one.
 - Use this for databases, local dev servers, and other services running on the host
 - The host is reachable via `docker.host` (injected automatically at container start) — use this hostname instead of `localhost`
+- Entries are validated at `ocs rebuild` (a bare TCP port, `1`–`65535`): a malformed entry (e.g. `99999`, `abc`, a hostname) fails the rebuild with a clear error instead of aborting the container at start (the firewall would reject it)
 - Inline comments are stripped from each entry (`  - 5432 # postgres` → `5432`); a comment-only line (`  - # note`) is skipped
 - A rebuild is required after adding or removing entries
 
@@ -517,6 +523,7 @@ sensitive-paths:        # extra workspace sub-paths to pin read-only
 - Format is `ipv4:port` per line, e.g. `10.0.0.5:3306` or `192.168.1.10:8080` — each octet must be `0–255`, port `1–65535` (a malformed entry, e.g. `999.999.999.999:80`, is rejected at `ocs rebuild` with a clear error instead of aborting the container at start)
 - Use this for on-premises / intranet services not running on the host (internal databases, APIs, registries, …)
 - Each endpoint is allowlisted by the firewall and added to `no_proxy`, so clients connect to it directly without going through Squid
+- **CHANGE-ME:** the bundled template ships the self-hosted model-server endpoint as an *active* entry (marked `CHANGE-ME` in both `config/opencode-sandbox-config.yaml` and the `baseURL` in `config/opencode.jsonc`) — point both at your own Ollama instance (they must agree, and this endpoint must be reachable by the sandbox, or the agent cases SKIP and model pins fail)
 - Inline comments are stripped from each entry (`  - 10.0.0.5:3306 # db` → `10.0.0.5:3306`); a comment-only line (`  - # note`) is skipped
 - A rebuild is required after adding or removing entries
 

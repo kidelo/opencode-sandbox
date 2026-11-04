@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Case 08: AI agent (opencode + configured model) red-teams the sandbox.
+# TIER: AI-model SMOKE tier (08/09) — needs a reachable model endpoint;
+# SKIPs without one. The other 28 cases are the deterministic core and
+# pass/fail independent of any model.
 # shellcheck source=/dev/null
 # The agent is instructed to try to escape and to log the outcome of each
 # attempt to /tmp/security-report.json. Case 09 then evaluates that report.

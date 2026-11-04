@@ -142,6 +142,55 @@ list_projects() {
   fi
 }
 
+# edit_distance <a> <b> — Levenshtein distance (insert/delete/substitute = 1).
+# Two-row DP in flat indexed arrays (bash 3.2 has no associative arrays);
+# project names are short, so the O(len²) cost is irrelevant.
+edit_distance() {
+  local a="${1}" b="${2}"
+  local la=${#a} lb=${#b}
+  local i j m
+  local -a prev cur
+  for (( j = 0; j <= lb; j++ )); do prev[j]=$j; done
+  for (( i = 1; i <= la; i++ )); do
+    cur[0]=$i
+    for (( j = 1; j <= lb; j++ )); do
+      if [[ "${a:i-1:1}" == "${b:j-1:1}" ]]; then
+        cur[j]=${prev[j-1]}
+      else
+        m=${prev[j-1]}
+        if (( prev[j] < m )); then m=${prev[j]}; fi
+        if (( cur[j-1] < m )); then m=${cur[j-1]}; fi
+        cur[j]=$(( m + 1 ))
+      fi
+    done
+    for (( j = 0; j <= lb; j++ )); do prev[j]=${cur[j]}; done
+  done
+  printf '%s\n' "${prev[lb]}"
+}
+
+# suggest_project <candidate> — print the closest EXISTING project name
+# (edit distance <= 2) to <candidate>; return 1 when nothing is close
+# enough (the candidate is then more likely a prompt than a typo'd name).
+suggest_project() {
+  local candidate="${1}"
+  local d name best="" best_d=99 dist
+  for d in "${SANDBOXES_BASE}"/*/; do
+    [[ -d "${d}" ]] || continue
+    [[ -f "${d%/}/config/opencode-sandbox-config.yaml" ]] || continue
+    name="$(basename "${d}")"
+    dist="$(edit_distance "${candidate}" "${name}")"
+    if (( dist < best_d )); then
+      best_d=${dist}
+      best="${name}"
+    fi
+  done
+  if [[ -n "${best}" && ${best_d} -le 2 ]]; then
+    printf '%s\n' "${best}"
+    return 0
+  fi
+  return 1
+}
+
 cmd="${1:-help}"
 [[ $# -gt 0 ]] && shift
 
@@ -192,6 +241,19 @@ case "${cmd}" in
       cd "${run_dir}"
       exec "${BIN_DIR}/ocs-run" "$@"
     fi
+    # Near-miss guard: the first arg has the shape of a project name but no
+    # such project exists and a CLOSE one does — almost certainly a typo.
+    # Fail fast with the suggestion instead of silently treating it as an
+    # inline prompt. (A genuine prompt within distance 2 of a project name
+    # is far rarer than a mistyped name; `ocs list` shows the real names.)
+    if valid_sandbox_name "${run_first}" && [[ ! -f "${SANDBOXES_BASE}/${run_first}/config/opencode-sandbox-config.yaml" ]]; then
+      if run_suggestion="$(suggest_project "${run_first}" 2>/dev/null)"; then
+        echo "ocs: no project '${run_first}' — did you mean '${run_suggestion}'?" >&2
+        echo "ocs: available projects:" >&2
+        list_projects >&2 || true
+        exit 1
+      fi
+    fi
     # First arg is the prompt (file or inline); resolve the project from CWD.
     run_dir="$(find_sandbox_root 2>/dev/null || true)"
     if [[ -n "${run_dir}" && -d "${run_dir}" ]]; then
@@ -215,6 +277,16 @@ case "${cmd}" in
     if valid_sandbox_name "${plan_first}" && [[ -f "${SANDBOXES_BASE}/${plan_first}/config/opencode-sandbox-config.yaml" ]]; then
       cd "${SANDBOXES_BASE}/${plan_first}"
       exec "${BIN_DIR}/ocs-run" "$@" --agent plan
+    fi
+    # Near-miss guard (mirrors `run`): a name-shaped first arg with no such
+    # project but a close one is a typo, not an inline prompt — fail fast.
+    if valid_sandbox_name "${plan_first}" && [[ ! -f "${SANDBOXES_BASE}/${plan_first}/config/opencode-sandbox-config.yaml" ]]; then
+      if plan_suggestion="$(suggest_project "${plan_first}" 2>/dev/null)"; then
+        echo "ocs: no project '${plan_first}' — did you mean '${plan_suggestion}'?" >&2
+        echo "ocs: available projects:" >&2
+        list_projects >&2 || true
+        exit 1
+      fi
     fi
     plan_dir="$(find_sandbox_root 2>/dev/null || true)"
     if [[ -n "${plan_dir}" && -d "${plan_dir}" ]]; then

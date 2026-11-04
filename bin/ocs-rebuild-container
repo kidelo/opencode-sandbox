@@ -12,8 +12,6 @@ GROUP_ID="$(id -g)"
 USER_ID="$(id -u)"
 # WORKSPACE_DIR inside the container is the fixed path /workspace (set by each
 # profile's ENV); the project's workspace dir is mounted there at run time.
-# Generate a 48-character random hexadecimal password from /dev/urandom (od reads 24 bytes, converts to 48 hex chars)
-OPENCODE_PASSWORD="$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')"
 
 umask u=rwx,go=
 mkdir -p "${OPENCODE_SANDBOX_DIR}"
@@ -21,6 +19,18 @@ chmod u=rwx,go= "${OPENCODE_SANDBOX_DIR}"
 
 mkdir -p "${OPENCODE_STATE_DIR}"
 chmod u=rwx,go= "${OPENCODE_STATE_DIR}"
+
+# Staging area for the rebuild artifacts. The config parse + validation below
+# can abort at several points (bad port, CIDR, policy value, endpoint ...);
+# writing straight into the live dir would leave truncated/partial files that
+# the doors (and the next image build) would then read. So every config-
+# derived artifact is written into this staging dir first, validated, and
+# only then renamed into place (same-directory mv = atomic rename; a leftover
+# staging dir from an aborted rebuild is inert — nothing reads it, and the
+# previously committed set stays intact).
+STAGE_DIR="${OPENCODE_SANDBOX_DIR}/.staging"
+rm -rf -- "${STAGE_DIR}"
+mkdir -p -- "${STAGE_DIR}"
 
 # ---------------------------------------------------------------------------
 # Concurrency guard: serialize ocs-rebuild-container for ONE project across
@@ -59,9 +69,22 @@ fi
 
 echo "Container name: ${CONTAINER_NAME}"
 
-printf '%s\n' "${OPENCODE_PASSWORD}" > "${OPENCODE_PASSWORD_FILE}"
-chmod u=rw,go= "${OPENCODE_PASSWORD_FILE}"
-echo "Generated OpenCode password and saved it to ${OPENCODE_PASSWORD_FILE}"
+# The OpenCode password is shared by every container of this project (web,
+# TUI, terminal) and is read host-side by the doors. A rebuild must NOT
+# rotate it — `ocs test` rebuilds the test image, and a rotation there would
+# silently invalidate a running web session. Generate only when the file is
+# absent (first build, or after `ocs clean`); the new value is staged and
+# committed together with the rest of the artifacts (a failed first build
+# then leaves nothing half-written).
+if [[ -f "${OPENCODE_PASSWORD_FILE}" ]]; then
+  echo "Reusing existing OpenCode password (${OPENCODE_PASSWORD_FILE}) — no rotation"
+else
+  # 48-character random hexadecimal password (od reads 24 bytes, tr renders 48 hex chars)
+  OPENCODE_PASSWORD="$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')"
+  printf '%s\n' "${OPENCODE_PASSWORD}" > "${STAGE_DIR}/opencode-password"
+  chmod u=rw,go= "${STAGE_DIR}/opencode-password"
+  echo "Generated OpenCode password (commits to ${OPENCODE_PASSWORD_FILE})"
+fi
 
 echo "Copying entrypoint script ..."
 cp "${SANDBOX_HOME}/docker/entrypoint.sh" "${OPENCODE_SANDBOX_DIR}/entrypoint.sh"
@@ -74,14 +97,14 @@ cp "${SANDBOX_HOME}/docker/landlock.py" "${OPENCODE_SANDBOX_DIR}/landlock.py"
 
 echo "Processing sandbox configuration ..."
 if [[ -f "${CONFIG_FILE}" ]]; then
-  SQUID_WHITELIST="${OPENCODE_SANDBOX_DIR}/squid-whitelist.txt"
-  HOST_PORTS="${OPENCODE_SANDBOX_DIR}/host-ports.txt"
-  INTRANET_ENDPOINTS="${OPENCODE_SANDBOX_DIR}/intranet-endpoints.txt"
-  ENV_PASSTHROUGH="${OPENCODE_SANDBOX_DIR}/env-passthrough.txt"
-  ENV_STATIC="${OPENCODE_SANDBOX_DIR}/env.txt"
-   VOLUME_MOUNTS="${OPENCODE_SANDBOX_DIR}/volume-mounts.txt"
-   READ_ONLY_MOUNTS="${OPENCODE_SANDBOX_DIR}/read-only-mounts.txt"
-   SENSITIVE_PATHS="${OPENCODE_SANDBOX_DIR}/sensitive-paths.txt"
+  SQUID_WHITELIST="${STAGE_DIR}/squid-whitelist.txt"
+  HOST_PORTS="${STAGE_DIR}/host-ports.txt"
+  INTRANET_ENDPOINTS="${STAGE_DIR}/intranet-endpoints.txt"
+  ENV_PASSTHROUGH="${STAGE_DIR}/env-passthrough.txt"
+  ENV_STATIC="${STAGE_DIR}/env.txt"
+   VOLUME_MOUNTS="${STAGE_DIR}/volume-mounts.txt"
+   READ_ONLY_MOUNTS="${STAGE_DIR}/read-only-mounts.txt"
+   SENSITIVE_PATHS="${STAGE_DIR}/sensitive-paths.txt"
    true > "${SQUID_WHITELIST}"
    true > "${HOST_PORTS}"
    true > "${INTRANET_ENDPOINTS}"
@@ -205,7 +228,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     echo "ERROR: 'opencode-port' must be an integer between 1 and 65535; got '${cfg_opencode_port}'." >&2
     exit 1
   fi
-  printf '%s\n' "${cfg_opencode_port}" > "${OPENCODE_PORT_FILE}"
+  printf '%s\n' "${cfg_opencode_port}" > "${STAGE_DIR}/opencode-port"
   PORT="${cfg_opencode_port}"
 
   # Agent DNS (tunnel gate): 'deny' (default) drops the dev uid's :53 egress
@@ -216,10 +239,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     echo "ERROR: 'agent-dns' must be 'deny' or 'allow'; got '${cfg_agent_dns}'." >&2
     exit 1
   fi
-  AGENT_DNS_FILE="${OPENCODE_SANDBOX_DIR}/agent-dns"
-  # rm first: a prior run may have left it 0400 (owner read-only), which would
-  # make the redirect below fail with "Permission denied" on every re-rebuild.
-  rm -f -- "${AGENT_DNS_FILE}"
+  AGENT_DNS_FILE="${STAGE_DIR}/agent-dns"
   printf '%s\n' "${cfg_agent_dns}" > "${AGENT_DNS_FILE}"
   # 0600 (owner rw) like the sibling build artifacts so the next rebuild can
   # overwrite it; it is COPY'd read-only into the image by every Dockerfile.*.
@@ -229,7 +249,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   # range; each sandbox gets its own /24 inside it, assigned by shared).
   # It must be an IPv4 CIDR in RFC1918 private space (10/8, 172.16/12,
   # 192.168/16), octets 0-255, prefix 8-24 — see valid_sandbox_cidr in shared.
-  CIDR_FILE="${OPENCODE_SANDBOX_DIR}/sandbox-network-cidr.txt"
+  CIDR_FILE="${STAGE_DIR}/sandbox-network-cidr.txt"
   if ! valid_sandbox_cidr "${cfg_sandbox_network_cidr}"; then
     echo "ERROR: 'sandbox-network-cidr' must be an RFC1918 private IPv4 CIDR (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16) with prefix 8-24 (e.g. 10.77.0.0/16); got '${cfg_sandbox_network_cidr}'." >&2
     exit 1
@@ -321,8 +341,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     fi
   done < "${SENSITIVE_PATHS}"
 
-  POLICY_FILE="${OPENCODE_SANDBOX_DIR}/policy.txt"
-  rm -f -- "${POLICY_FILE}"
+  POLICY_FILE="${STAGE_DIR}/policy.txt"
   {
     printf 'cpus=%s\n'      "${cfg_cpus}"
     printf 'memory=%s\n'    "${cfg_memory}"
@@ -341,8 +360,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   # must be baked into the image like agent-dns (a host-side policy.txt is not
   # visible to the container). agent-dns is the template for this pattern.
   for _kf in landlock egress-audit; do
-    _kfile="${OPENCODE_SANDBOX_DIR}/${_kf}"
-    rm -f -- "${_kfile}"
+    _kfile="${STAGE_DIR}/${_kf}"
     if [[ "${_kf}" == "landlock" ]]; then
       printf '%s\n' "${cfg_landlock}" > "${_kfile}"
     else
@@ -380,6 +398,18 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     done
   done < "${INTRANET_ENDPOINTS}"
 
+  # Validate host-ports: bare TCP port, 1-65535 (same shape+range rule as the
+  # scalar 'opencode-port' above). A bad value would be rejected by iptables
+  # at container start (aborting startup) — fail the rebuild with a clear
+  # error instead.
+  while IFS= read -r hp || [[ -n "${hp}" ]]; do
+    [[ -z "${hp}" ]] && continue
+    if [[ ! "${hp}" =~ ^[1-9][0-9]*$ ]] || (( ${#hp} > 5 )) || (( hp > 65535 )); then
+      echo "ERROR: host-ports entry '${hp}' is not a valid TCP port (1-65535)." >&2
+      exit 1
+    fi
+  done < "${HOST_PORTS}"
+
   # squid config + whitelist = the agent's own egress POLICY (not a secret —
   # /opencode-password stays 0600 in the image). Make them world-readable
   # (0644): docker COPY preserves build-context mode bits, and the suite
@@ -407,6 +437,20 @@ else
   echo "  Create opencode-sandbox-config.yaml (use ocs-init template) and rebuild." >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Commit the staged artifacts. Validation is complete (or the script has
+# already aborted), so rename every staged file into the live build dir —
+# same-directory mv is an atomic rename — and drop the staging dir. An
+# aborted rebuild never reaches this point, so the previously committed
+# artifact set stays intact and the doors keep reading a consistent set.
+# ---------------------------------------------------------------------------
+for _f in "${STAGE_DIR}"/*; do
+  [[ -e "${_f}" ]] || continue
+  mv -f -- "${_f}" "${OPENCODE_SANDBOX_DIR}/$(basename -- "${_f}")"
+done
+rmdir -- "${STAGE_DIR}"
+echo "  Committed staged artifacts into ${OPENCODE_SANDBOX_DIR}"
 
 # ---------------------------------------------------------------------------
 # Resolve the Docker image profile (`dockerfile:` key in the project config,
@@ -481,7 +525,7 @@ fi
 # sandbox ships (passed to base.Dockerfile as --build-arg). Bumping it (and
 # OCS_BASE_API, since base.Dockerfile's layer set effectively changes) forces
 # both level base images to be rebuilt on the next ocs rebuild.
-OCS_BASE_API="8"
+OCS_BASE_API="9"
 OPENCODE_BUILD_VERSION="2.2.5"
 
 # --- Locales -----------------------------------------------------------------
@@ -577,7 +621,7 @@ echo "Building Container Image '${BUILD_IMAGE_TAG}' from Dockerfile.${DOCKERFILE
 BUILD_LOG="${OPENCODE_SANDBOX_DIR}/docker-build.log"
 
 # Optional caller-supplied build flags (space-separated string, e.g.
-# "--build-arg HARNESS_EP_IP=10.77.5.50 --label ocs-harness-ep=10.77.5.50
+# "--build-arg HARNESS_EP_IP=10.77.5.254 --label ocs-harness-ep=10.77.5.254
 # --label ocs-test-api=1"). Used by ocs-test to bake its harness egress
 # targets into the TEST image. Default: empty — behaviour unchanged.
 EXTRA_BUILD_ARGS="${EXTRA_BUILD_ARGS:-}"

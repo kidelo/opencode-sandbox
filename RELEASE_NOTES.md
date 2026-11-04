@@ -6,12 +6,58 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub releases: `RELEASE_V0.9-KIDELO` (2026-11-04),
+Last published GitHub releases: `RELEASE_V0.10-KIDELO` (2026-11-04),
+`RELEASE_V0.9-KIDELO` (2026-11-04),
 `RELEASE_V0.8.2-KIDELO`, `RELEASE_V0.8.1-KIDELO`, `RELEASE_V0.8-KIDELO`,
 `RELEASE_V0.7.2-KIDELO` and `RELEASE_V0.7-KIDELO`
 (the latter five all 2026-11-03); v0.7.1 ships in the v0.7.2 push.
 Releases v0.2–v0.6 below are local milestones shipped in the repo without
 GitHub release tags.
+
+---
+
+## v0.10 — review remediation: rebuild atomicity, credential hygiene, `ocs test` robustness, typo guard
+
+Fixes the 14 confirmed defects (M-1…M-4, L-1…L-8) from the architecture review. Two change user-visible behaviour: `ocs rebuild` no longer leaves **partial artifacts** when validation aborts, and it **no longer rotates the server password**. The rest hardens failure paths (`ocs test` cleanup, run-flag assembly), improves UX (typo guard in `ocs run` / `ocs plan`), and corrects or completes documentation (test tiers, CHANGE-ME markers, deferred-pinning rationale, landlock semantics).
+
+### Highlights
+
+- **Rebuild atomicity (M-1).** `ocs rebuild` now writes every config-derived artifact into a staging dir (`${OPENCODE_SANDBOX_DIR}/.staging`) and validates the full config (port, CIDR, host-ports, policy values, endpoints, …). Only when the rebuild has **not** aborted are the artifacts renamed into the build dir in one pass (same-directory `mv` = atomic rename). Previously an aborted rebuild could leave truncated/partial files that the doors (and the next image build) would then read; now the previously committed artifact set stays intact.
+- **Password no-rotation (M-2).** `ocs rebuild` reuses the existing `<project>/.sandbox/build/opencode-password` when present — already-authenticated clients and stored credentials stay valid across rebuilds. A password is generated only on the first build (into staging, committed with the rest). To force rotation: delete the file (or `ocs clean`) first.
+- **Typo guard in `ocs run` / `ocs plan` (M-4).** A first argument that *looks like* a project name but does not exist, while a **close** project does (edit distance ≤ 2), now fails fast with `Did you mean '<name>'?` and the project list — instead of being silently treated as an inline prompt. A genuinely distant first argument keeps the prompt interpretation (e.g. `ocs run kitten "…"` still works as a prompt).
+- **`ocs test` cleanup + signals (M-3).** The peer/listener helper containers and the test image are now cleaned up by a trap (EXIT + INT/TERM) armed **before** the helpers start — a Ctrl-C or a crash mid-harness-setup no longer leaves orphan containers/images behind. Every handler is `${:-}`-guarded so it cannot abort under `set -u` when it fires early.
+- **Harness EP listener moved to the subnet's last usable host (M-3).** The fixed positive-egress listener is now `<subnet>.254` (was `<subnet>.50`): Docker's IPAM allocates from the **front** of the pool, so it can never collide with an auto-assigned container on the net (such as the test container itself). The suite now **pins** this invariant — case 15 fails fast if the harness EP is not `<subnet>.254`, so a regression is caught by `ocs test`. `TEST_API` 8→10 forces the cached `-test` image to re-bake.
+- **`host-ports` validation (L-1).** Entries are validated at rebuild time (bare TCP port, `1`–`65535`, same shape rule as `opencode-port`): a malformed entry fails `ocs rebuild` with a clear error instead of aborting the container at start (the firewall would reject it).
+- **`ocs terminal` secret hygiene (L-6).** The server password is now read **inside** the container (root reads `/opencode-password`, `root:root 0600`) and handed to the TUI via a shell env var (`unset` before the `exec gosu dev`): it no longer appears on the host `ps` cmdline (the previous `-e OPENCODE_PASSWORD=<secret>` form did). `OPENCODE_PORT` is still passed as a `-e` flag (not secret).
+- **Test tiers documented (L-2).** The suite is explicitly two-tiered: cases **08/09** are the **AI-model smoke tier** (they SKIP when the model endpoint is unreachable); the other **28** are the **deterministic core** that pass/fail independent of any model. Noted in the case headers, the `ocs test` summary line, and the README — a 08/09 SKIP without a model endpoint is now documented as expected, not a signal loss.
+- **CHANGE-ME markers (L-5).** The shipped config templates mark the self-hosted model-server endpoint — `config/opencode.jsonc` `baseURL` and the `intranet-endpoints` entry in `config/opencode-sandbox-config.yaml` — with `CHANGE-ME` comments (the value stays active for this self-hosted repo; new projects must point both at their own Ollama and keep them in agreement).
+- **Start-time robustness (L-8).** `build_run_flags` skips (and logs) malformed static-`env` / `volume-mounts` / `read-only-mounts` entries instead of crashing at container start when Docker rejects the flag; `ensure_sandbox_network` refuses to recreate a network that still has containers attached (clear error + the attached list) instead of orphaning a running container; `ocs tui --detach` fails fast with a `docker logs` hint when the container dies during session start; the tmux pane's `TERM` / `COLORTERM` are sanitised to a conservative character set (with known-good fallbacks).
+- **Landlock semantics documented (L-7).** `docker/landlock.py` docstring now states the real behaviour: a Landlock apply failure records `/run/.landlock-failed` and the container **continues** — Landlock is opt-in defence-in-depth, not a fail-closed gate (the entrypoint never aborts on it). The `prctl` comment now correctly notes that `no_new_privs` is required by the kernel before `landlock_restrict_self` (the container already sets it via `no-new-privileges`; it is set for standalone invocation — the container does **not** hold CAP_SYS_ADMIN, caps are dropped).
+- **Pinning rationale documented (L-3, L-4).** `config/base.Dockerfile`: a hash pin of the downloaded OpenCode binary was evaluated and **deferred** — the v2 `curl | bash` installer publishes no checksum, and a locally captured copy would carry unverifiable provenance; the binding controls are the HTTPS-only fetch, the explicit `--version` pin, and the in-image version guard (a build where the endpoint serves a different version fails there). `config/base-full.Dockerfile`: the `full` profile's pip set was likewise left unpinned until a verified `pip freeze` can be captured from a working full-stack build (the sandbox's own egress policy blocks PyPI; the one documented exception stays: `yearfrac==0.4.8`).
+
+### Breaking changes
+
+- **Rebuilds no longer rotate the server password (M-2)** — existing credentials stay valid across `ocs rebuild`. Rotate by deleting `<project>/.sandbox/build/opencode-password` (or `ocs clean`) before rebuilding.
+- **Malformed `host-ports` entries are now a rebuild error (L-1)** — entries that were previously accepted (and then failed at container start) fail `ocs rebuild` immediately with a clear message.
+
+### Upgrade steps
+
+- `git pull`, then `ocs rebuild <name>` per project — `OCS_BASE_API` 8→9 re-bakes the shared bases once (the base-Dockerfile changes in this release are comment-only — layer set unchanged — but the bump is the staleness guard), and the rebuild re-extracts the artifacts under the new staging-commit + no-rotation semantics.
+- `ocs test` re-bakes its `-test` image automatically (`TEST_API` 8→10).
+- The `ocs run` / `ocs plan` typo guard is host-side (dispatcher) — no rebuild needed for it.
+
+### Verification
+
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+- Typo guard verified against a temporary sandbox dir: `api-gatwy` → suggests `api-gateway` (distance 2); `api-gatwye` (distance 3) and `kitten` vs `sitting` (distance 3) → **no** suggestion (prompt interpretation preserved); far name → no suggestion ✅
+- Staging-commit, no-rotation password, and `ocs test` trap cleanup exercised by inspection + shellcheck (live container doors cannot run in the dev harness)
+- `ocs test` full suite on the release host (2026-11-04, Docker 29.9.2; `ocs-base` re-baked `8→9`, `-test` image rebuilt `TEST_API` 10, harness EP `10.77.242.254`): **29 passed, 0 failed, 1 skipped** — the AI-model smoke tier (08/09) ran and passed (all six red-team escapes reported `blocked`), case 15 confirms the `.254` harness-EP invariant (endpoint `10.77.242.254:8765` reachable, adjacent `:8766` blocked), and the single SKIP is case 04 (`squid-deny`), expected because `example.com` is whitelisted for this project (the deny path is covered by cases 03/27)
+
+### Release metadata (v0.10)
+
+- **Base:** `64bc0e8` (v0.9 + bookkeeping)
+- **Commits in range (files):** `ocs` (typo guard + distance helpers), `bin/ocs-rebuild-container` (staging commit, no-rotation password, `host-ports` validation, `OCS_BASE_API` 8→9), `bin/ocs-test` (trap cleanup, EP IP `<subnet>.254`, `TEST_API` 8→10, tier summary), `bin/shared` (start-time skip-and-log, network-attached guard), `bin/ocs-terminal` (secret hygiene), `bin/ocs-interactive` (detach-wait fail-fast, `TERM` sanitisation), `docker/landlock.py` (docs), `config/base.Dockerfile` + `config/base-full.Dockerfile` (pinning-rationale notes), `config/opencode.jsonc` + `config/opencode-sandbox-config.yaml` (CHANGE-ME), `test/cases/08-agent-redteam.sh` + `test/cases/09-agent-report-verdict.sh` (tier headers), `test/cases/15-intranet-endpoint.sh` (`.254` invariant guard), `README.md`, `HOWTO.md`, `AGENTS.md`, `RELEASE_NOTES.md`
+- **Tag (published):** `RELEASE_V0.10-KIDELO` (2026-11-04)
 
 ---
 
@@ -877,6 +923,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
+| **v0.10** | **review remediation (14 defects)** — rebuild atomicity (staging + atomic commit), password no-rotation, `host-ports` validation, `ocs test` trap cleanup + harness EP `<subnet>.254` + case 15 pins the invariant (`TEST_API` 8→10), `run`/`plan` typo guard, terminal secret hygiene, test tiers documented, CHANGE-ME markers, deferred-pinning rationale, landlock docs | `RELEASE_V0.10-KIDELO` (published) |
 | **v0.9** | **locales baked into the base images** (host-detected, `OCS_LOCALES`/`OCS_DEFAULT_LOCALE` build args, `ocs-base-locale` label, `OCS_BASE_API` 7→8) + **the model pin is now a tested contract** (case 30: catalog resolves to exactly the pinned model, context limit present) + 6 stale sandbox configs synced (local) | `RELEASE_V0.9-KIDELO` (published) |
 | **v0.8.2** | **detached TUI truecolour passthrough** — tmux needs BOTH the server's `terminal-features …:RGB` AND a client with real `TERM`; shared `attach_tui()` applies both halves at every attach site (the `--detach` initial attach was a bare attach → truecolour backgrounds quantised to black) | `RELEASE_V0.8.2-KIDELO` (published) |
 | **v0.8.1** | **detached TUI truecolour** — pane starts with TERM=xterm-256color + COLORTERM=truecolor (the TUI's renderer fell back to 16-colour under tmux's default TERM=screen) | `RELEASE_V0.8.1-KIDELO` (published) |

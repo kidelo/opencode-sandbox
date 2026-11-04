@@ -39,6 +39,8 @@
       "settings": {
         // Your local model server (Ollama). Use "ollama" (default) for the
         // official ollama.ai cloud, or point at your own instance.
+        // CHANGE-ME: this repo ships a self-hosted Ollama address; point it
+        // at your own instance (ip:port) before using the sandbox.
         "baseURL": "http://192.168.0.139:11434/v1",
         "timeout": 600000,
         "chunkTimeout": 600000

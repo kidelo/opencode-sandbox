@@ -162,9 +162,18 @@ detach_tmux_session_up() {
 detach_wait_session() {
   # The entrypoint runs squid + firewall before the OPCODE_CMD — give the
   # tmux session a few seconds to exist before we attach to it.
-  local _
+  local _ running
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
     detach_tmux_session_up && return 0
+    # Fail fast if the container itself is gone (entrypoint crash, OOM ...):
+    # waiting out the full loop would end in a confusing "no tmux session"
+    # with no hint that the container is what died.
+    running="$("${CONTAINER_RUNTIME}" inspect -f '{{.State.Running}}' "${DETACH_NAME}" 2>/dev/null || true)"
+    if [[ "${running}" != "true" ]]; then
+      echo "ERROR: container ${DETACH_NAME} exited while the TUI session was starting." >&2
+      echo "       Inspect it: \"${CONTAINER_RUNTIME}\" logs ${DETACH_NAME}" >&2
+      return 1
+    fi
     sleep 1
   done
   return 1
@@ -174,8 +183,14 @@ detach_wait_session() {
 # TERM/COLORTERM are PASSED THROUGH from the caller's terminal (the door
 # runs in the user's shell, so these reflect the real client terminal),
 # with safe fallbacks.
-PANE_TERM="$(printf '%s' "${TERM:-xterm-256color}" | tr -d '[:space:]')"
-PANE_COLORTERM="$(printf '%s' "${COLORTERM:-truecolor}" | tr -d '[:space:]')"
+# Sanitise to a conservative character set (not just whitespace): a quote or
+# space in TERM would break the in-container `bash -c "$OPCODE_CMD"` runtime
+# eval (and the -e flag parsing). Anything outside the set is dropped; if
+# that empties the value, fall back to a known-good one.
+PANE_TERM="$(printf '%s' "${TERM:-xterm-256color}" | tr -cd 'A-Za-z0-9_.-')"
+[[ -n "${PANE_TERM}" ]] || PANE_TERM="xterm-256color"
+PANE_COLORTERM="$(printf '%s' "${COLORTERM:-truecolor}" | tr -cd 'A-Za-z0-9_.-')"
+[[ -n "${PANE_COLORTERM}" ]] || PANE_COLORTERM="truecolor"
 # LANG: the host's own UTF-8 locale (e.g. de_DE.UTF-8) — `ocs rebuild`
 # detects it, bakes it into the image (base.Dockerfile) AND writes it to
 # locale.txt; passing it to the pane explicitly also covers images that

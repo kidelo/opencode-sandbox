@@ -143,6 +143,14 @@ RUN if [ -x /usr/bin/fdfind ]; then \
 # ============================================================================
 # PYTHON PACKAGES — data + office + PDF + HTML + OCR + ML (precompiled)
 # Intentionally NO: torch/tf/jax/… GPU stack; xgboost; pyxlsb
+#
+# Version pinning (review 2026-11-04): evaluated and deferred. A pinned set
+# must be captured with `pip freeze` from a WORKING full-stack build (Python
+# 3.13, PyPI reachable) — environments without the installed stack (and the
+# repo's own sandbox blocks PyPI egress) cannot produce a verified pin list,
+# and pins copied from elsewhere would risk every `full` rebuild. Until a
+# verified freeze is captured and committed, the build tracks the latest
+# compatible release (the one documented exception: yearfrac, pinned below).
 # ============================================================================
 RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
     && python -m pip install --no-cache-dir \

@@ -138,6 +138,14 @@ RUN git config --system core.hooksPath /dev/null
 # comparing to the pinned bare version. NOTE: no inline comments are allowed
 # inside the \-continuation chain below — a comment line there breaks the
 # `&&` sequence (the RUN uses bash via the SHELL directive).
+#
+# Integrity note (review 2026-11-04): a hash pin of the downloaded binary
+# was evaluated and deferred — the v2 installer (curl | bash) publishes NO
+# checksum for the release binary, and baking in a locally captured copy
+# would carry unverifiable provenance while risking every host rebuild.
+# The binding controls are: HTTPS-only fetch, the explicit --version pin,
+# and the version guard below (a build in which the endpoint serves a
+# different version fails here instead of silently drifting).
 ARG OPENCODE_BUILD_VERSION=2.2.5
 RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path --version "${OPENCODE_BUILD_VERSION}" \
     && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
