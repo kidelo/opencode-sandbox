@@ -15,6 +15,109 @@ GitHub release tags.
 
 ---
 
+## v0.9 — locales baked into the base images + the model pin becomes a tested contract
+
+Two things: the base images now carry the **host's UTF-8 locales** (the
+detached TUI and every other door run with a working locale instead of
+POSIX), and the **"opencode.jsonc is honoured" property is now a regression
+test** — after the report "I can see all models and the context limit is
+broken" it had been verified only by hand.
+
+### Root cause — "all models / broken context limit"
+
+Diagnosed end-to-end on OpenCode 2.2.5 (the image's pinned CLI). The config
+**was** being loaded: with `config/opencode.jsonc` mounted, `opencode models`
+resolves to exactly `ollama/qwen3.8:27b` and the serve API agrees
+(`GET /api/provider` → one provider; `GET /api/model` → one model with
+`"limit": {"context": 196608, "output": 32768}`; without any config the same
+commands list the whole built-in `opencode/*` free catalog — that is the
+"all models" state). Both config shapes parse and pin correctly: the V1
+shape (`provider`/`npm`/`options`/`permission` object) and the V2 shape
+(`providers`/`package`/`settings`/`permissions` array) — the live schema
+(https://opencode.ai/config.json) accepts both, and the binary is the source
+of truth (the docs lag it). `enabled_providers: ["ollama"]` is the catalog
+lever (the binary normalises it into a `provider.use` policy: deny `*`, allow
+`ollama`).
+
+The user-visible failure therefore came from **state, not the mechanism**:
+several sandbox projects still held **stale pre-v0.7 config copies** (their
+own `config/opencode.jsonc`, which is what each door mounts), and doors
+started before a config fix kept the old state. All local sandbox copies are
+now synced to the canonical config, and the HOWTO has a troubleshooting
+entry for exactly this symptom.
+
+### Highlights
+
+- **Locales in the base images.** `ocs rebuild` detects the host's
+  UTF-8-capable locales (`locale -a`, host `LANG` as default when UTF-8) and
+  passes `OCS_LOCALES` / `OCS_DEFAULT_LOCALE` as build args;
+  `config/base.Dockerfile` installs `locales` and `locale-gen`s exactly the
+  requested set (beyond glibc's built-in C.UTF-8/POSIX) and bakes
+  `ENV LANG=<default>`. The build stamps an `ocs-base-locale` label and the
+  base-reuse check matches it — a different host locale set re-builds the two
+  shared bases once (with `OCS_BASE_API` bumped 7→8). Closes the loop with
+  the v0.8.2 detached-TUI pane, which reads the new `locale.txt` artifact
+  (default locale, written by `ocs rebuild`) and passes it as the pane's
+  `LANG` — so the TUI pane gets a working UTF-8 locale even on images that
+  predate the bake.
+- **Test case 30 — the model pin is a contract now.**
+  `test/cases/30-model-pin.sh` runs inside the test container: `opencode
+  models` must resolve to **exactly one model** — the one the mounted config
+  pins (no built-in free catalog) — and the config must carry a numeric
+  `limit.context` (the value the TUI context meter reads). Suite is now
+  **30 cases**.
+- **Docs.** HOWTO §7 documents the pinning keys (`model`,
+  `enabled_providers`, `limit.context`), both valid config shapes, and the
+  two one-liner verifications (in-container `opencode models`; host
+  `curl /api/model` against a running door); HOWTO §11 gains the
+  "all models / broken limit" troubleshooting entry; README suite count → 30.
+- **Local state fix:** the six stale sandbox config copies
+  (`20o`, `20o2`, `sectest`, `smoketest`, `test`, `testsec`) were synced to
+  the canonical `config/opencode.jsonc` (they predated the v0.7 config
+  rewrite; all nine projects now carry the same pin, including the
+  compaction buffer + title-agent + todo settings). Sandboxes are
+  gitignored local state — this remediation is host-side, not part of the
+  repo.
+
+### Breaking changes
+
+None. (One-time cost: both shared base images re-build once on the next
+`ocs rebuild`, for the locale layer.)
+
+### Upgrade steps
+
+- `git pull`, then `ocs rebuild <name>` (or any project) — the bases re-bake
+  once with the host locales; `ocs tui --detach` then hands the pane the
+  host's UTF-8 default locale.
+- For a project that showed "all models": confirm its
+  `config/opencode.jsonc` is the current one, then re-run the door
+  (`ocs kill <name>` + start) — a door started before the fix keeps the old
+  state.
+
+### Verification
+
+- Live serve door (canonical config): `GET /api/provider` → exactly
+  `ollama`; `GET /api/model` + `GET /api/model/default` → exactly
+  `ollama/qwen3.8:27b` with `limit.context=196608`, `limit.output=32768`.
+- Same for a sandbox door running a **stale V1-shape** config: one provider,
+  one model, same limits — both shapes proven, not assumed.
+- No-config control: `opencode models` lists the full `opencode/*` free
+  catalog (the failure mode the pin exists to prevent).
+- `opencode debug config`: the mounted document parses;
+  `enabled_providers` normalises to the deny-`*`/allow-`ollama` policy.
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean
+- `ocs test` → 30 cases, all PASS (case 30 included)
+
+### Release metadata (v0.9)
+
+- **Base:** `1a62343`
+- **Commits in range:** `config/base.Dockerfile`, `bin/ocs-rebuild-container`,
+  `test/cases/30-model-pin.sh`, `README.md`, `HOWTO.md`, `AGENTS.md`,
+  `RELEASE_NOTES.md`
+- **Tag:** `RELEASE_V0.9-KIDELO` (unpublished)
+
+---
+
 ## v0.8.2 — detached TUI: truecolour passes through to the terminal
 
 **Bug fix (v0.8 detached TUI).** Even with the v0.8.1 pane env the TUI's
@@ -774,6 +877,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
+| **v0.9** | **locales baked into the base images** (host-detected, `OCS_LOCALES`/`OCS_DEFAULT_LOCALE` build args, `ocs-base-locale` label, `OCS_BASE_API` 7→8) + **the model pin is now a tested contract** (case 30: catalog resolves to exactly the pinned model, context limit present) + 6 stale sandbox configs synced (local) | `RELEASE_V0.9-KIDELO` (unpublished) |
 | **v0.8.2** | **detached TUI truecolour passthrough** — tmux needs BOTH the server's `terminal-features …:RGB` AND a client with real `TERM`; shared `attach_tui()` applies both halves at every attach site (the `--detach` initial attach was a bare attach → truecolour backgrounds quantised to black) | `RELEASE_V0.8.2-KIDELO` (published) |
 | **v0.8.1** | **detached TUI truecolour** — pane starts with TERM=xterm-256color + COLORTERM=truecolor (the TUI's renderer fell back to 16-colour under tmux's default TERM=screen) | `RELEASE_V0.8.1-KIDELO` (published) |
 | **v0.8** | **detached TUI** — `ocs tui --detach/--attach/--stop/--status`: TUI in tmux in a long-lived container, leave with Ctrl-B D, the agent keeps working; `tmux` in `ocs-base` | `RELEASE_V0.8-KIDELO` (published) |

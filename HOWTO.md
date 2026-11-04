@@ -278,7 +278,29 @@ sensitive-paths:                # extra workspace sub-paths to pin READ-ONLY (ad
 
 `config/opencode.jsonc` sets the model, provider (`baseURL` of your Ollama server) and OpenCode permissions (`webfetch` / `websearch` denied by default). Change it if you point at a different model.
 
-> **Any change to `config/…` requires a rebuild:** `ocs rebuild`.
+**How the model pin works (and how to verify it).** The file is mounted **read-only** at `/etc/opencode/opencode.jsonc` and `OPENCODE_CONFIG` is pointed at it — OpenCode reads it on every start (CLI and server alike). Three keys do the pinning, verified working on OpenCode 2.2.5:
+
+- `model` — the default model, e.g. `"ollama/qwen3.8:27b"`;
+- `enabled_providers` — the **catalog lever**: with `["ollama"]` OpenCode normalises a policy that *denies every other provider*, so the built-in free catalog (`opencode/…`) never appears in the model list or the TUI picker;
+- the model's `limit.context` / `limit.output` — the values the TUI context meter and compaction read.
+
+The V1-shaped (`provider`/`npm`/`options`/`permission`) and the V2-shaped (`providers`/`package`/`settings`/`permissions`) config both parse and pin correctly on 2.2.5 — the live schema (`https://opencode.ai/config.json`) accepts both; the installed binary is the source of truth.
+
+Quick checks (with a door running, or a one-shot container):
+
+```bash
+# 1) inside the container, as the dev user:
+opencode models                # must list exactly the pinned model — nothing else
+
+# 2) from the host, against a running web door (basic auth):
+PW=$(cat .sandbox/build/opencode-password)
+curl -s -u "opencode:$PW" http://127.0.0.1:<port>/api/model | python3 -m json.tool
+# → exactly one entry, with "limit": {"context": …, "output": …}
+```
+
+`ocs test` case 30 re-runs check 1 inside a fresh container on every test run, so a regression to "all models / broken limit" fails the suite instead of silently happening.
+
+> **Any change to `config/…` requires a rebuild:** `ocs rebuild`. (The `opencode.jsonc` itself is a **live** ro mount — no rebuild needed, only a re-run of the door.)
 
 ---
 
@@ -379,6 +401,7 @@ If it contains secrets, add it to `.gitignore`.
 ## 11. Troubleshooting
 
 - **"port is already allocated"** — two sandboxes are using the same `opencode-port`. Use different ports, or switch to the portless one-shot modes.
+- **"I see all the models / the context limit looks wrong"** — the model pin lives in `config/opencode.jsonc` (see §7: `model` + `enabled_providers` + `limit.context`). Check, in order: (1) the file exists in **this project's** `config/` dir (every sandbox mounts its *own* copy — an old project may still hold a pre-v0.7 stale one); (2) a door/container started **before** the config was fixed still runs the old state — stop and re-run it (`ocs kill <name>` + start); (3) verify with `opencode models` inside a fresh container — it must list exactly one model. `ocs test` case 30 covers this regression.
 - **Agent case SKIPs in `ocs test`** — the model endpoint (your Ollama `ip:port`) is not reachable from the container. Add it to `intranet-endpoints` in `config/opencode-sandbox-config.yaml` and rebuild.
 - **The agent cannot resolve a hostname (DNS "no answer"/timeout)** — expected with the default `agent-dns: deny` (the DNS exfil/C2 channel is closed). Two options: address the endpoint by IP (`intranet-endpoints: - ip:port`, and give the model `baseURL` an IP), or set `agent-dns: allow` in the config and rebuild if you accept the DNS exfil risk.
 - **A test case FAILed and the image vanished** — by design. `ocs rebuild` brings it back.

@@ -57,6 +57,27 @@ RUN apt-get update \
         whois \
     && rm -rf /var/lib/apt/lists/*
 
+# --- Locales (host-detected, passed as build args by `ocs rebuild`) ----------
+# `ocs rebuild` detects the host's UTF-8-capable locales (`locale -a`) and
+# its own LANG (as the default) and passes both here. Only what is requested
+# (beyond glibc's built-in C.UTF-8 / POSIX) gets generated, and LANG is set
+# so every door — especially the detached TUI's tmux pane — runs with a
+# working UTF-8 locale (without it, e.g. typing 'ü' renders as '_').
+ARG OCS_LOCALES="C.UTF-8"
+ARG OCS_DEFAULT_LOCALE="C.UTF-8"
+RUN needs="" ; \
+    for l in ${OCS_LOCALES}; do \
+        case "${l}" in C*|POSIX*) ;; *) needs="${needs} ${l}" ;; esac ; \
+    done ; \
+    if [[ -n "${needs}" ]]; then \
+        apt-get update \
+            && apt-get install -y --no-install-recommends locales \
+            && for l in ${needs}; do printf '%s UTF-8\n' "${l}" >> /etc/locale.gen; done \
+            && locale-gen \
+            && rm -rf /var/lib/apt/lists/*; \
+    fi
+ENV LANG=${OCS_DEFAULT_LOCALE}
+
 # --- user / group ----------------------------------------------------------
 # Baked with the host's uid/gid (passed as build args by `ocs rebuild`). If
 # they differ from a previously built base, `ensure_base_image` rebuilds this

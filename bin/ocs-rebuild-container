@@ -481,8 +481,44 @@ fi
 # sandbox ships (passed to base.Dockerfile as --build-arg). Bumping it (and
 # OCS_BASE_API, since base.Dockerfile's layer set effectively changes) forces
 # both level base images to be rebuilt on the next ocs rebuild.
-OCS_BASE_API="7"
+OCS_BASE_API="8"
 OPENCODE_BUILD_VERSION="2.2.5"
+
+# --- Locales -----------------------------------------------------------------
+# Detect the host's UTF-8-capable locales (`locale -a`) and use them for the
+# images: the host's own LANG (when UTF-8-capable) becomes the default, and
+# C.UTF-8 (built into glibc) is always included. The list is passed as build
+# args to base.Dockerfile (which generates exactly what is requested), and
+# the default is also written to ${OPENCODE_SANDBOX_DIR}/locale.txt so the
+# `ocs tui --detach` door can hand the pane a working UTF-8 locale even on
+# images that predate the in-image bake.
+HOST_LOCALES="C.UTF-8"
+HOST_LOCALE_DEFAULT="C.UTF-8"
+if command -v locale >/dev/null 2>&1; then
+  _hlang="${LANG:-}"
+  case "${_hlang}" in *UTF-8*|*utf8*)
+    HOST_LOCALE_DEFAULT="$(printf '%s' "${_hlang}" | sed -E 's/\.utf8$/\.UTF-8/')"
+    ;;
+  esac
+  while IFS= read -r _loc; do
+    case "${_loc}" in *utf8*|*UTF-8*)
+      _norm="$(printf '%s' "${_loc}" | sed -E 's/\.utf8$/\.UTF-8/')"
+      if [[ "${_norm}" =~ ^[A-Za-z0-9@_.:-]+$ ]] && [[ " ${HOST_LOCALES} " != *" ${_norm} "* ]]; then
+        HOST_LOCALES="${HOST_LOCALES} ${_norm}"
+      fi
+      ;;
+    esac
+  done < <(locale -a 2>/dev/null)
+  # The default must actually be part of the generated set (otherwise glibc
+  # would fall back to POSIX at runtime).
+  case " ${HOST_LOCALES} " in
+    *" ${HOST_LOCALE_DEFAULT} "*) ;;
+    *) HOST_LOCALE_DEFAULT="C.UTF-8" ;;
+  esac
+fi
+printf '%s\n' "${HOST_LOCALE_DEFAULT}" > "${OPENCODE_SANDBOX_DIR}/locale.txt"
+chmod 0644 "${OPENCODE_SANDBOX_DIR}/locale.txt"
+echo "  Locales: ${HOST_LOCALES} (default: ${HOST_LOCALE_DEFAULT})"
 
 ensure_base_image() {
   local tag="${1:?base image name is required}"
@@ -494,7 +530,10 @@ ensure_base_image() {
   base_uid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-uid"}}' "${tag}" 2>/dev/null)" || true
   base_gid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-gid"}}' "${tag}" 2>/dev/null)" || true
   base_api="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-api"}}' "${tag}" 2>/dev/null)" || true
-  if [[ "${base_uid}" == "${USER_ID}" && "${base_gid}" == "${GROUP_ID}" && "${base_api}" == "${OCS_BASE_API}" ]]; then
+  # The base now also bakes host-detected locales — a cached base from a
+  # different locale set is stale, so the set is part of the reuse check.
+  base_locale="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-locale"}}' "${tag}" 2>/dev/null)" || true
+  if [[ "${base_uid}" == "${USER_ID}" && "${base_gid}" == "${GROUP_ID}" && "${base_api}" == "${OCS_BASE_API}" && "${base_locale}" == "${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" ]]; then
     echo "  ✓ Reusing precompiled base image '${tag}' — skipping its shared layers"
     return 0
   fi
@@ -509,9 +548,12 @@ ensure_base_image() {
     --build-arg "USER_ID=${USER_ID}" \
     --build-arg "GROUP_ID=${GROUP_ID}" \
     --build-arg "OPENCODE_BUILD_VERSION=${OPENCODE_BUILD_VERSION}" \
+    --build-arg "OCS_LOCALES=${HOST_LOCALES}" \
+    --build-arg "OCS_DEFAULT_LOCALE=${HOST_LOCALE_DEFAULT}" \
     --label "ocs-base-uid=${USER_ID}" \
     --label "ocs-base-gid=${GROUP_ID}" \
     --label "ocs-base-api=${OCS_BASE_API}" \
+    --label "ocs-base-locale=${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" \
     -t "${tag}" \
     -f "${dockerfile}" \
     "${SANDBOX_HOME}/config" > "${base_log}" 2>&1; then
