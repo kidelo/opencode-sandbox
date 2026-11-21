@@ -146,7 +146,7 @@ RUN git config --system core.hooksPath /dev/null
 # The binding controls are: HTTPS-only fetch, the explicit --version pin,
 # and the version guard below (a build in which the endpoint serves a
 # different version fails here instead of silently drifting).
-ARG OPENCODE_BUILD_VERSION=2.2.5
+ARG OPENCODE_BUILD_VERSION=2.3.2
 RUN curl -fsSL https://opencode.ai/v2/install | bash -s -- --no-modify-path --version "${OPENCODE_BUILD_VERSION}" \
     && cp /root/.opencode/bin/opencode /usr/local/bin/opencode \
     && chown "${USER_ID}:${GROUP_ID}" /usr/local/bin/opencode \

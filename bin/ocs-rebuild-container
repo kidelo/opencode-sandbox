@@ -525,8 +525,8 @@ fi
 # sandbox ships (passed to base.Dockerfile as --build-arg). Bumping it (and
 # OCS_BASE_API, since base.Dockerfile's layer set effectively changes) forces
 # both level base images to be rebuilt on the next ocs rebuild.
-OCS_BASE_API="9"
-OPENCODE_BUILD_VERSION="2.2.5"
+OCS_BASE_API="10"
+OPENCODE_BUILD_VERSION="2.3.2"
 
 # --- Locales -----------------------------------------------------------------
 # Detect the host's UTF-8-capable locales (`locale -a`) and use them for the
@@ -597,6 +597,7 @@ ensure_base_image() {
     --label "ocs-base-uid=${USER_ID}" \
     --label "ocs-base-gid=${GROUP_ID}" \
     --label "ocs-base-api=${OCS_BASE_API}" \
+    --label "ocs-base-opencode=${OPENCODE_BUILD_VERSION}" \
     --label "ocs-base-locale=${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" \
     -t "${tag}" \
     -f "${dockerfile}" \

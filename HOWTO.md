@@ -278,13 +278,13 @@ sensitive-paths:                # extra workspace sub-paths to pin READ-ONLY (ad
 
 `config/opencode.jsonc` sets the model, provider (`baseURL` of your Ollama server) and OpenCode permissions (`webfetch` / `websearch` denied by default). Change it if you point at a different model.
 
-**How the model pin works (and how to verify it).** The file is mounted **read-only** at `/etc/opencode/opencode.jsonc` and `OPENCODE_CONFIG` is pointed at it — OpenCode reads it on every start (CLI and server alike). Three keys do the pinning, verified working on OpenCode 2.2.5:
+**How the model pin works (and how to verify it).** The file is mounted **read-only** at `/etc/opencode/opencode.jsonc` and `OPENCODE_CONFIG` is pointed at it — OpenCode reads it on every start (CLI and server alike). Three keys do the pinning, verified working on OpenCode 2.3.2:
 
 - `model` — the default model, e.g. `"ollama/qwen3.8:27b"`;
 - `enabled_providers` — the **catalog lever**: with `["ollama"]` OpenCode normalises a policy that *denies every other provider*, so the built-in free catalog (`opencode/…`) never appears in the model list or the TUI picker;
 - the model's `limit.context` / `limit.output` — the values the TUI context meter and compaction read.
 
-The V1-shaped (`provider`/`npm`/`options`/`permission`) and the V2-shaped (`providers`/`package`/`settings`/`permissions`) config both parse and pin correctly on 2.2.5 — the live schema (`https://opencode.ai/config.json`) accepts both; the installed binary is the source of truth.
+The V1-shaped (`provider`/`npm`/`options`/`permission`) and the V2-shaped (`providers`/`package`/`settings`/`permissions`) config both parse and pin correctly on 2.3.2 — the live schema (`https://opencode.ai/config.json`) accepts both; the installed binary is the source of truth.
 
 Quick checks (with a door running, or a one-shot container):
 

@@ -86,8 +86,11 @@ EP_IP="${SUBNET_BASE%.0}.254"
 # auto-assigned container on the net, such as the test container itself);
 # v10 pins that invariant in the suite — case 15 now fails if the harness EP
 # is not <subnet>.254 (re-baking keeps the cached test image self-consistent
-# with the current suite).
-TEST_API="10"
+# with the current suite); v11 re-bakes against OpenCode CLI 2.3.2 (the base
+# re-bake is invisible to image_is_current — it only checks ocs-test-api +
+# ocs-harness-ep — so a stale -test image built FROM the pre-2.3.2 base
+# would be silently reused).
+TEST_API="11"
 HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API}"
 
 # Rebuild only when the cached image is missing or was built before the

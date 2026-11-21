@@ -6,13 +6,50 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub releases: `RELEASE_V0.10-KIDELO` (2026-11-04),
+Last published GitHub releases: `RELEASE_V0.11-KIDELO` (2026-11-21),
+`RELEASE_V0.10-KIDELO` (2026-11-04),
 `RELEASE_V0.9-KIDELO` (2026-11-04),
 `RELEASE_V0.8.2-KIDELO`, `RELEASE_V0.8.1-KIDELO`, `RELEASE_V0.8-KIDELO`,
 `RELEASE_V0.7.2-KIDELO` and `RELEASE_V0.7-KIDELO`
 (the latter five all 2026-11-03); v0.7.1 ships in the v0.7.2 push.
 Releases v0.2–v0.6 below are local milestones shipped in the repo without
 GitHub release tags.
+
+---
+
+## v0.11 — OpenCode CLI 2.3.2 pin + installed-version stamp in the base images
+
+The sandbox now ships **OpenCode 2.3.2** (the latest stable, 2026-11-13), up from 2.2.5. The upgrade is verified against the actual 2.3.2 release binary, and the base images now stamp the **installed** CLI version as a label so the pin is inspectable without running a container.
+
+### Highlights
+
+- **CLI pin 2.2.5 → 2.3.2.** `OPENCODE_BUILD_VERSION` in `bin/ocs-rebuild-container` (the single source, passed as `--build-arg`) and the `ARG` default in `config/base.Dockerfile` both moved to 2.3.2. `OCS_BASE_API` 9→10 forces the cached bases to re-bake; `TEST_API` 10→11 forces the cached `-test` image to rebuild — a base re-bake is invisible to `image_is_current` (it only checks `ocs-test-api` + `ocs-harness-ep`), so without the bump a `-test` image built `FROM` the pre-2.3.2 base would be silently reused and the suite would keep testing 2.2.5.
+- **Installed version stamped as an image label.** The base builds now pass `--label ocs-base-opencode=<OPENCODE_BUILD_VERSION>`, so `docker image inspect ocs-base` (and `ocs-base-full`) shows exactly which CLI the image was built with — the installed-version counterpart to the already-enforced in-build version guard (`test "$(opencode --version)" …` in `base.Dockerfile`, which fails the build if the endpoint serves a different version).
+- **Default config: `"update": "disable"`.** The shipped `config/opencode.jsonc` disables OpenCode's auto-update (valid values: `disable` / `notify` / `auto`): sandboxes are ephemeral one-shot containers and the sandbox firewall would deny the update egress anyway. The remaining config keys (`model`, `compaction.buffer`, `agents.title`, `experimental.subagent_depth`/`todo`, `enabled_providers`, `providers`, `permissions`) were checked against the live 2.3.x config schema — all still present, no renames.
+- **2.3.x CLI surface re-verified against the release binary** before pinning: `opencode serve --hostname --port` (web server door), `opencode run --standalone -m` (one-shot doors), the full-TUI `--standalone --server --continue -s` surface, and the `opencode v<version>` output format the version guard parses.
+- **Behaviour note (2.3.0, from upstream changelog):** non-interactive `opencode run` now **waits for background jobs** (shell commands, subagents, image jobs) that the prompt started before exiting — so a `ocs run` prompt that kicks off a long-running job keeps the run open (SIGTERM → exit 143). The one-shot doors are unaffected in normal use (the container is torn down after the run), and the `timeout:` policy still bounds them.
+
+### Breaking changes
+
+- **Containers now run OpenCode 2.3.2** — any workflow that depended on 2.2.5-specific CLI output will see the 2.3.x surface. TUI default: transcript verbosity is now `low` (collapsible activity rows) — an explicit `session.verbosity` setting is kept.
+
+### Upgrade steps
+
+- `git pull`, then `ocs rebuild <name>` per project — the shared bases re-bake **once per host** (`OCS_BASE_API` 9→10); subsequent projects reuse them. The `ocs test` image re-bakes on the next run (`TEST_API` 11).
+- No config changes needed for existing projects (the default-config `"update": "disable"` line ships for new inits; existing projects may add it to their own `opencode.jsonc` to match).
+
+### Verification
+
+- 2.3.2 release binary (the exact `@opencode/cli-linux-x64` npm artifact the installer fetches) checked on the host: `opencode --version` → `opencode v2.3.2`; `serve`/`run`/TUI flag surface present
+- `ocs rebuild` (Docker 29.9.2): both precompiled bases re-baked — in-image `opencode --version` in `ocs-base` **and** `ocs-base-full` = `opencode v2.3.2`; labels `ocs-base-api=10`, `ocs-base-opencode=2.3.2`
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+- `ocs test` full suite on the release host: **29 passed, 0 failed, 1 skipped** (skip = case 04 squid-deny — `example.com` is whitelisted for this project, expected); the `-test` image **re-baked** against 2.3.2 (`TEST_API` 11) rather than reused, and cases **08/09** (the doors' `opencode run` one-shot surface) and **30** (catalog pinned to exactly `ollama/qwen3.8:27b`, context limit present) pass on 2.3.2
+
+### Release metadata (v0.11)
+
+- **Base:** `89e6e18` (v0.10)
+- **Commits in range (files):** `bin/ocs-rebuild-container` (`OPENCODE_BUILD_VERSION` 2.2.5→2.3.2, `OCS_BASE_API` 9→10, `ocs-base-opencode` label), `bin/ocs-test` (`TEST_API` 10→11 + v11 comment), `config/base.Dockerfile` (`ARG` default 2.3.2), `config/opencode.jsonc` (`"update": "disable"`, 2.3.2 comment), `README.md` + `AGENTS.md` + `HOWTO.md` (current-pin references 2.3.2), `RELEASE_NOTES.md`
+- **Tag (published):** `RELEASE_V0.11-KIDELO` (2026-11-21)
 
 ---
 
@@ -923,6 +960,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
+| **v0.11** | **OpenCode CLI 2.2.5 → 2.3.2 pin** (latest stable, verified against the release binary) + installed CLI version stamped as the `ocs-base-opencode` image label + `"update": "disable"` in the default config + `OCS_BASE_API` 9→10 + `TEST_API` 10→11 (a base re-bake is invisible to `image_is_current`) | `RELEASE_V0.11-KIDELO` (published) |
 | **v0.10** | **review remediation (14 defects)** — rebuild atomicity (staging + atomic commit), password no-rotation, `host-ports` validation, `ocs test` trap cleanup + harness EP `<subnet>.254` + case 15 pins the invariant (`TEST_API` 8→10), `run`/`plan` typo guard, terminal secret hygiene, test tiers documented, CHANGE-ME markers, deferred-pinning rationale, landlock docs | `RELEASE_V0.10-KIDELO` (published) |
 | **v0.9** | **locales baked into the base images** (host-detected, `OCS_LOCALES`/`OCS_DEFAULT_LOCALE` build args, `ocs-base-locale` label, `OCS_BASE_API` 7→8) + **the model pin is now a tested contract** (case 30: catalog resolves to exactly the pinned model, context limit present) + 6 stale sandbox configs synced (local) | `RELEASE_V0.9-KIDELO` (published) |
 | **v0.8.2** | **detached TUI truecolour passthrough** — tmux needs BOTH the server's `terminal-features …:RGB` AND a client with real `TERM`; shared `attach_tui()` applies both halves at every attach site (the `--detach` initial attach was a bare attach → truecolour backgrounds quantised to black) | `RELEASE_V0.8.2-KIDELO` (published) |
