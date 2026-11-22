@@ -230,6 +230,176 @@ refresh_root_paths "${ROOT_DIR}"
 # in-session override is possible. Keep in sync with 'model' in config/opencode.jsonc.
 OPENCODE_MODEL="ornith-1.5:9b"
 
+# ---------------------------------------------------------------------------
+# Unified model catalog -> pi models.json transform.
+#
+# config/opencode.jsonc is the SINGLE source of the model catalog (see
+# config/ARCHITECTURE.md). The pi engine does NOT read that ro mount — it
+# resolves models from a baked models.json whose schema differs (an ARRAY of
+# {id,name,contextWindow,maxTokens} vs the opencode map of {modelID, limit}).
+# The pi bake is host-side at `ocs rebuild` / `ocs test`, so this helper runs
+# on the host (python3 is available there) and emits the pi models.json to a
+# path given as $1, injecting the baseUrl given as $2. It is a no-op / error
+# only if the catalog is malformed — a bad catalog must fail the rebuild, not
+# silently bake a missing-model image.
+#
+# Emits nothing and returns 1 on any error; callers `set -e` handle it.
+# ---------------------------------------------------------------------------
+build_pi_models_json() {
+  local out_path="${1:?usage: build_pi_models_json <out-path>}"
+  local base_url="${2:?usage: build_pi_models_json <out-path> <baseUrl>}"
+  local cfg_file="${SANDBOX_JSONC_FILE:?need SANDBOX_JSONC_FILE}"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 is required to derive the pi models.json from the model catalog." >&2
+    exit 1
+  fi
+  if [[ ! -f "${cfg_file}" ]]; then
+    echo "ERROR: model catalog not found at ${cfg_file}." >&2
+    exit 1
+  fi
+  # Derive the pi models.json via the standalone python transform
+  # (build_pi_models_json_python), which reads the catalog + base_url and
+  # emits the baked models.json to a temp file. Then atomically move it into
+  # place. NOTE: build_pi_models_json_python writes to $out_path directly; the
+  # temp-file dance below is redundant, so delegate and let it write out_path.
+  if ! build_pi_models_json_python "${out_path}" "${base_url}"; then
+    echo "ERROR: failed to derive the pi models.json from config/opencode.jsonc (bad catalog?)." >&2
+    echo "  'providers.ollama.models' must be a map of {name, modelID, limit.{context,output}}." >&2
+    exit 1
+  fi
+  # chown the baked file to the dev user so the entrypoint can seed it.
+  chown "${USER_ID}:${GROUP_ID}" "${out_path}" 2>/dev/null || true
+  chmod 0644 "${out_path}" 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
+# Standalone python transform: opencode.jsonc catalog -> pi models.json.
+#
+# config/opencode.jsonc is the SINGLE model-catalog source. The pi engine does
+# NOT read that read-only mount — it resolves models from a baked models.json
+# whose schema differs (an ARRAY of {id,name,contextWindow,maxTokens} vs the
+# opencode map of {modelID, limit}). This runs host-side at `ocs rebuild` /
+# `ocs test` (python3 is available there) and emits the pi models.json to $1,
+# injecting the baseUrl given as $2.
+#
+# opencode.jsonc is JSONC (// line comments). No JSONC lib ships on the host, so
+# we strip the comments with a string-aware scanner (a // inside a string value
+# — e.g. the "$schema" URL or the ollama baseURL — must survive) and then
+# extract the "providers.ollama.models" map by structure. Each catalog entry
+# is {name, modelID, limit:{context,output}}; the pi array emits
+# {id,name,contextWindow,maxTokens}.
+#
+# modelID canonicalization:
+#   - drop a trailing "#variant" tail (e.g. "x:base#Q4_K_M" -> "x:base")
+#   - strip ONLY a leading "ollama/" provider prefix (e.g. "ollama/x:tag" ->
+#     "x:tag"); a leading "hf.co/" or any other scheme is preserved untouched
+#     (a hf.co/... GGUF id is a real ollama server tag, not a provider path).
+#
+# Emits nothing and returns 1 on any error; callers set -e handle it.
+# ---------------------------------------------------------------------------
+build_pi_models_json_python() {
+  python3 - "$1" "$2" "$SANDBOX_JSONC_FILE" <<'PYEOF'
+import json, sys
+
+out_path, base_url, cfg_file = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def fail(msg):
+    sys.stderr.write("ERROR: " + msg + "\n")
+    sys.exit(1)
+
+with open(cfg_file, "r", encoding="utf-8") as fh:
+    raw = fh.read()
+
+# Strip // line comments that are NOT inside a string. Scan each physical line
+# for a "//" that appears while NOT between quotes — that is where a comment
+# starts, and we keep only the text up to it. A "//" inside a string value
+# (e.g. the "$schema" URL or the ollama baseURL) is preserved. The newline is
+# re-appended so the resulting JSON keeps its line structure.
+cleaned_lines = []
+for line in raw.split("\n"):
+    in_str = False
+    comment_at = len(line)  # index where a comment starts; len(line) = none
+    for i, ch in enumerate(line):
+        if in_str:
+            if ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch == "/" and (i == 0 or line[i - 1] == "/"):
+            # We broke on the SECOND "/" of "//" (at index i), so the comment
+            # starts at i-1. Keep everything BEFORE the first slash.
+            comment_at = i - 1  # comment starts here; drop "//"+the rest of the line
+            break
+    cleaned_lines.append(line[:comment_at])
+
+try:
+    doc = json.loads("\n".join(cleaned_lines))
+except Exception as exc:  # noqa: BLE001
+    fail("could not parse config/opencode.jsonc as JSONC (%s)" % exc)
+
+ollama = doc.get("providers", {}).get("ollama")
+if not isinstance(ollama, dict):
+    fail("no 'providers.ollama' object found in the catalog")
+
+models = ollama.get("models")
+if not isinstance(models, dict) or not models:
+    fail("'providers.ollama.models' must be a non-empty map of {name, modelID, limit.{context,output}}")
+
+def canonicalize(model_id):
+    mid = model_id.split("#", 1)[0] if "#" in model_id else model_id
+    if model_id.startswith("ollama/"):
+        mid = mid[len("ollama/"):]
+    return mid
+
+entries = []
+for key, entry in models.items():
+    if not isinstance(entry, dict):
+        fail("model catalog entry '%s' must be an object" % key)
+    mid = entry.get("modelID")
+    if not mid:
+        fail("model catalog entry '%s' is missing 'modelID'" % key)
+    limit = entry.get("limit") or {}
+    ctx = limit.get("context")
+    out = limit.get("output")
+    if not isinstance(ctx, int) or not isinstance(out, int) or ctx <= 0 or out <= 0:
+        fail("model catalog entry '%s' must carry numeric limit.context/limit.output > 0" % key)
+    entries.append({
+        "id": canonicalize(mid),
+        "name": entry.get("name") or mid,
+        "contextWindow": ctx,
+        "maxTokens": out,
+    })
+
+doc_out = {
+    "providers": {
+        "ollama": {
+            "api": "openai-completions",
+            "baseUrl": base_url,
+            "apiKey": "ollama",
+            "models": entries,
+        }
+    }
+}
+
+with open(out_path, "w", encoding="utf-8") as fh:
+    json.dump(doc_out, fh, indent=2)
+    fh.write("\n")
+PYEOF
+}
+
+# Canonicalize an opencode model id to the ollama server id. Strips a leading
+# "provider/" (e.g. "ollama/ornith-1.5:9b" -> "ornith-1.5:9b") and a "#variant"
+# tail (e.g. "ollama/x:base#Q4_K_M" -> "x:base"). Leaves a bare "name:tag" or
+# "hf.co/...:tag" untouched.
+canonicalize_ollama_id() {
+  local mid="$1"
+  mid="${mid%%#*}"                 # drop #variant
+  mid="${mid#*/}"                  # drop leading provider/
+  printf '%s' "${mid}"
+}
+
 # Container runtime: prefer docker, fall back to podman
 if command -v docker >/dev/null 2>&1; then
   CONTAINER_RUNTIME=docker

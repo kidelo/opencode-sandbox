@@ -85,6 +85,108 @@ confirm() {
   done
 }
 
+# Derive the pi 'pi-base-url:' from the opencode config's
+# provider.ollama.settings.baseURL (copied into the project in Step 3), and
+# make sure the endpoint's host:port is firewall-allowed in intranet-endpoints:.
+# The endpoint already lives in the opencode config, so we never prompt for it —
+# even with -y/--yes we just read it (the repo template ships a concrete baseURL).
+# If the baseURL is missing or not an http(s)://ipv4:port URL we abort with a
+# clear error (the rebuild also enforces the IP + the allowlist, but this error
+# is far more actionable).
+DERIVE_PI_ENDPOINT() {
+  local cfg="${CONFIG_FILE}"
+  local bcfg full_url hostport present=0 ep
+  # Read the endpoint from the copied project opencode.jsonc, or the repo
+  # source if the user declined the copy. The key is
+  # provider.ollama.settings.baseURL (e.g. http://192.168.0.139:11434/v1).
+  if [[ -f "${JSONC_FILE}" ]]; then
+    bcfg="${JSONC_FILE}"
+  else
+    bcfg="${JSONC_SOURCE}"
+    echo "  (opencode.jsonc not copied — deriving pi-base-url from the repo source)"
+  fi
+  bcfg_line="$(grep -E '"baseURL"[[:space:]]*:' "${bcfg}" | head -1 || true)"
+  if [[ -z "${bcfg_line}" ]]; then
+    echo "  ERROR: could not find 'provider.ollama.settings.baseURL' in opencode.jsonc." >&2
+    echo "  The repo template needs a local ollama endpoint there before a pi" >&2
+    echo "  project can be built." >&2
+    exit 1
+  fi
+  # Pull out the URL value (JSONC may carry comments; we only match the key).
+  full_url="$(grep -oE '"baseURL"[[:space:]]*:[[:space:]]*"[^"]*"' "${bcfg}" | head -1 | sed -E 's/.*"baseURL"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
+  if [[ -z "${full_url}" || "${full_url}" != http* ]]; then
+    echo "  ERROR: provider.ollama.settings.baseURL in opencode.jsonc is not a valid http(s):// URL: '${full_url}'." >&2
+    exit 1
+  fi
+  # The rebuild's allowlist check strips scheme + path, so derive host:port.
+  hostport="${full_url#*://}"
+  hostport="${hostport%%/*}"
+  # host:port must be firewall-allowed (intranet-endpoints:). Scope the
+  # rewrite to the intranet-endpoints: section only — the template's other
+  # list sections (http-domain-whitelist, etc.) must not be touched. Collect
+  # the section's active items first so we can decide whether to append
+  # (the template may already ship one, e.g. a CHANGE-ME example).
+  local tmp_endpoints
+  tmp_endpoints="$(mktemp)"
+  local -a section_items=()
+  local in_section=0 lst
+  while IFS= read -r lst || [[ -n "${lst}" ]]; do
+    if [[ "${lst}" =~ ^intranet-endpoints: ]]; then
+      in_section=1
+      printf '%s\n' "${lst}"
+      continue
+    fi
+    if [[ "${in_section}" -eq 1 ]]; then
+      if [[ "${lst}" =~ ^[[:space:]]*-[[:space:]]+([^[:space:]]+) ]]; then
+        section_items+=("${BASH_REMATCH[1]}")
+        printf '%s\n' "${lst}"
+      else
+        printf '%s\n' "${lst}"
+      fi
+    else
+      printf '%s\n' "${lst}"
+    fi
+  done < "${cfg}" > "${tmp_endpoints}"
+  in_section=0
+  present=0
+  for ep in "${section_items[@]:-}"; do
+    [[ -z "${ep}" ]] && continue
+    if [[ "${ep}" == "${hostport}" ]]; then present=1; break; fi
+  done
+  if [[ "${present}" -eq 1 ]]; then
+    echo "  ✓ intranet-endpoints: '${hostport}' already listed."
+  else
+    echo "  Adding '${hostport}' to intranet-endpoints: (so the endpoint is firewall-allowed)..."
+    while IFS= read -r lst || [[ -n "${lst}" ]]; do
+      if [[ "${lst}" =~ ^intranet-endpoints: ]]; then
+        printf '%s\n' "${lst}"
+        if [[ "${present}" -eq 0 ]]; then printf '  - %s\n' "${hostport}"; fi
+      else
+        printf '%s\n' "${lst}"
+      fi
+    done < "${cfg}" > "${tmp_endpoints}"
+  fi
+  cp "${tmp_endpoints}" "${cfg}"
+  # Inject the active pi-base-url: from the config's baseURL; if the template
+  # ships it commented out, replace the comment line, else append a fresh one.
+  local tmp_cfg
+  tmp_cfg="$(mktemp)"
+  if grep -qE '^[[:space:]]*#[[:space:]]*pi-base-url:' "${cfg}"; then
+    while IFS= read -r lst || [[ -n "${lst}" ]]; do
+      if [[ "${lst}" =~ ^[[:space:]]*#[[:space:]]*pi-base-url ]]; then
+        printf 'pi-base-url: %s\n' "${full_url}"
+      else
+        printf '%s\n' "${lst}"
+      fi
+    done < "${cfg}" > "${tmp_cfg}"
+  else
+    cp "${cfg}" "${tmp_cfg}"
+    printf '\npi-base-url: %s\n' "${full_url}" >> "${tmp_cfg}"
+  fi
+  mv "${tmp_cfg}" "${cfg}"
+  echo "  ✓ Injected pi-base-url: ${full_url}"
+}
+
 # --- opencode-sandbox-config (required) ---
 CONFIG_FILE="${TARGET_DIR}/config/opencode-sandbox-config.yaml"
 CONFIG_TEMPLATE="${SANDBOX_HOME}/config/opencode-sandbox-config.yaml"
@@ -205,6 +307,17 @@ else
   else
     echo "  Skipped."
   fi
+fi
+echo ""
+
+# pi projects need an active 'pi-base-url:' pointing at the intranet ollama
+# endpoint. The endpoint already lives in the opencode config's
+# provider.ollama.settings.baseURL (copied above), so derive pi-base-url: from
+# it and make sure the host:port is firewall-allowed in intranet-endpoints:.
+# (Only for the pi one-shot tails; opencode/minimal/full never set it. With
+# -y we cannot guess anything, but the endpoint comes from config, not a prompt.)
+if [[ "${profile_choice}" == "pi-mini" || "${profile_choice}" == "pi-full" ]]; then
+  DERIVE_PI_ENDPOINT
 fi
 echo ""
 

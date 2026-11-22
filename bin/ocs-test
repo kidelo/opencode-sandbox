@@ -99,7 +99,13 @@ EP_IP="${SUBNET_BASE%.0}.254"
 # conditional PI_BASE_URL bake — pi projects only; the rebuild tail passes the
 # `pi-base-url:` URL as --build-arg, opencode projects pass an empty value and
 # the RUN is a no-op). Cases 08/30 still see the pinned model resolve offline.
-TEST_API="13"
+# v14 switches that bake from a RUN-cp to a COPY (a RUN cannot see the build
+# context) — pi-models.json is now always staged by the rebuild (pi: the
+# derived multi-model catalog; opencode: a minimal stub) — and the entrypoint
+# refreshes the workspace models.json from the image bake on every door run
+# (the catalog is derived, not user-owned). Cases 08/30 assert the full
+# multi-model catalog.
+TEST_API="14"
 
 # The test image is FROM the project's own engine base (the rebuild script's
 # OCS_TEST_BASE_IMAGE dispatch): pi projects test on ocs-base-pi-minimal,

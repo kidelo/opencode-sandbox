@@ -39,29 +39,24 @@ ARG USER_ID
 ARG GROUP_ID
 ARG PI_BASE_URL=""
 
-# --- models.json (per-project, from the `pi-base-url:` config key) ------------
-# Written to the pi-agent directory baked into the base (the same path where
-# the pi-plugins block installs into). Baked owned by dev; the entrypoint
-# seeds this tree into the workspace's persistent pi-agent directory.
-RUN set -e ; \
-    if [ -z "${PI_BASE_URL}" ]; then \
-        echo "ERROR: PI_BASE_URL build argument is empty — set 'pi-base-url:' in the project config." >&2 ; \
-        exit 1 ; \
-    fi ; \
-    printf '%s\n' \
-        '{' \
-        '  "providers": {' \
-        '    "ollama": {' \
-        '      "api": "openai-completions", ' \
-        '      "baseUrl": "'"${PI_BASE_URL}"'", ' \
-        '      "apiKey": "ollama", ' \
-        '      "models": [' \
-        '        { "id": "ornith-1.5:9b", "name": "Ornith 1.5 9B", "contextWindow": 131072, "maxTokens": 16384 }' \
-        '      ]' \
-        '    }' \
-        '  }' \
-        '}' > /opt/ocs/pi-agent/models.json \
-    && chown "${USER_ID}:${GROUP_ID}" /opt/ocs/pi-agent/models.json \
+# --- models.json (multi-model catalog, derived from config/opencode.jsonc) -----
+# The pi engine bakes its model list from a derived models.json (an ARRAY of
+# {id,name,contextWindow,maxTokens}) — NOT from the read-only opencode.jsonc
+# mount. This file is derived host-side at `ocs rebuild` from the common
+# "providers.ollama.models" catalog (bin/ocs-rebuild-container ->
+# build_pi_models_json()) and committed into the build context as
+# pi-models.json, then COPY'd in here. The baseUrl baked into it is the
+# staged pi-base-url (validated by `ocs rebuild`; must be in intranet-endpoints:).
+# opencode projects pass an empty PI_BASE_URL and skip this whole bake, so this
+# RUN stays a no-op for them — the guard is only here to fail fast on a pi
+# project that forgot to set 'pi-base-url:'.
+ARG PI_BASE_URL=""
+# pi-models.json is the derived per-project models.json — a real build-context
+# file (bin/ocs-rebuild-container -> build_pi_models_json), NOT something a RUN
+# can generate: a RUN runs on the container filesystem and cannot see the
+# build context. COPY it in, then fix ownership/permissions.
+COPY pi-models.json /opt/ocs/pi-agent/models.json
+RUN chown "${USER_ID}:${GROUP_ID}" /opt/ocs/pi-agent/models.json \
     && chmod 0644 /opt/ocs/pi-agent/models.json
 
 # --- squid proxy configuration ----------------------------------------------

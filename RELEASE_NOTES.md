@@ -17,6 +17,45 @@ GitHub release tags.
 
 ---
 
+## v0.13 — unified multi-model catalog: one config file drives both engines
+
+The model list is now a **single catalog** in the project's `config/opencode.jsonc` (`providers.ollama.models` map) that **both engines consume**: opencode reads it directly at runtime (the catalog is declarative — `opencode models` lists every entry; selection is `-m provider/model#variant` / the TUI model picker), and pi derives its offline `models.json` from the same catalog at `ocs rebuild`. Six models ship by default (`ornith-1.5:9b`, `lfm3:1.7b-q8_0`, `qwen3.8-27b`, `gemma4:e4b`, `bonsai-2:9b`, `mimo-v2.6:latest`), each with `name`, `modelID` (the real ollama tag), and numeric `limit.{context,output}`.
+
+### Highlights
+
+- **Unified model catalog (single source).** `config/opencode.jsonc` `providers.ollama.models` is the one place the model set is defined. Per-sandbox copy model: `ocs init` copies the repo template into `<project>/config/opencode.jsonc` and the rebuild reads **the project's own copy** (the user owns it per sandbox). The catalog is a map; each entry carries `name`, `modelID` (only a leading `ollama/` prefix is stripped, so ids with slashes survive — e.g. `hf.co/bartowski/Qwen3.8-27B-GGUF:IQ3_XXS` for `qwen3.8-27b`), and numeric `limit.{context,output}`.
+- **pi derives models.json from the catalog.** The pi container has no runtime internet and cannot read the ro-mounted `opencode.jsonc`, so `ocs rebuild` transforms the catalog host-side (`build_pi_models_json()` in `bin/shared`, a python3 heredoc): map→array, `limit.context`→`contextWindow`, `limit.output`→`maxTokens`, the `pi-base-url:` host:port injected as `baseUrl`, JSONC comments stripped string-aware (a `//` inside a string — the `$schema` URL, the ollama `baseURL` — survives). The derived file is staged as `pi-models.json` into the build context and `COPY`'d into the pi tails at `/opt/ocs/pi-agent/models.json`.
+- **Root-cause fix: `RUN cp` → `COPY`.** The previous tails moved the file with `RUN cp pi-models.json …`, which can **never** work — a `RUN` executes on the container filesystem and never sees the build context, so the staged file was silently never baked ("derived pi-models.json is missing from the build context"). A `COPY` is the correct mechanism (the wrapper pre-owns it to `${USER_ID}:${GROUP_ID}` + `chmod 0644`, and `COPY` preserves context mode/ownership, so the in-image `chown` is a no-op guard).
+- **Always-staged `pi-models.json`.** `Dockerfile.test` is shared by both engines and its `COPY pi-models.json` is unconditional, so the rebuild stages the file for **every** project: pi → the derived catalog, opencode → a minimal inert stub (the opencode test image has no pi binary and never reads it).
+- **Entrypoint refreshes the workspace models.json on every door run.** The catalog is derived, not user-owned — a stale workspace copy (from an older catalog) would otherwise shadow the new model set. The entrypoint therefore refreshes `pi-agent/models.json` from the image bake on **every** door run (the rest of that tree — `lsp.json`, sessions, settings — stays user-owned). This is what propagates a catalog change to an **existing** pi project after `ocs rebuild`.
+- **`pi-base-url:` is now REQUIRED for pi** (was optional; the default is no longer silently used). Its host:port must be in the project's `intranet-endpoints:`; `ocs rebuild` validates both and aborts on a mismatch. Empty for opencode projects (their tails skip the bake).
+- **Case 30 re-asserts the full catalog, dual-engine.** pi branch: `pi --list-models` (offline, from the baked `models.json`) resolves every catalog id with numeric `contextWindow`/`maxTokens`. opencode branch: strips the JSONC comments (string-aware, the same logic as the pi transform) before asserting `opencode models` lists every catalog id, the top-level `model` pin, and a numeric `limit.context` (what the TUI context meter reads). `TEST_API` 13→14.
+
+### Breaking changes
+
+- **`pi-base-url:` is required for pi projects** — a `pi-mini`/`pi-full` project without it now fails `ocs rebuild` (previously optional; the baked `http://192.168.0.139:11434/v1` default was silently used when the key was empty).
+- **Existing pi projects:** after `ocs rebuild` + a door run, the workspace `pi-agent/models.json` is refreshed from the new catalog (a project that hand-edited the file's catalog section will have it overwritten; the rest of the tree is untouched).
+
+### Upgrade steps
+
+- `git pull`, then `ocs rebuild <name>` per project. For pi projects ensure `pi-base-url:` is set (the bundled template ships it, pointed at the CHANGE-ME intranet ollama). `ocs test` re-bakes the `-test` image automatically (`TEST_API` 14).
+- To change the model set, edit the project's `config/opencode.jsonc` `providers.ollama.models` map, then `ocs rebuild <name>` (pi bakes it; opencode reads the catalog at runtime, so opencode-only changes need no rebuild, but the pi bake does).
+
+### Verification
+
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+- ptest01 (`dockerfile: pi-full`): `ocs rebuild` green; in-image `/opt/ocs/pi-agent/models.json` carries all 6 models with the injected `baseUrl` (`http://192.168.0.139:11434/v1`); `pi --list-models` resolves all 6 (context 131.1K; max-out 16.4K, `lfm3` 8.2K).
+- `ocs test ptest01`: **28 passed, 0 failed, 2 skipped** — case 30 "pi catalog resolved 6 model(s) from the unified catalog (context + output limits present)".
+- otest01 (`dockerfile: full`, opencode): `ocs test` green — case 30 opencode branch asserts the 6-model catalog + the top-level `ollama/ornith-1.5:9b` pin + a numeric `limit.context` (the JSONC comment-strip is the regression guard for the raw-`json.load`-on-`.jsonc` failure mode).
+
+### Release metadata (v0.13)
+
+- **Base:** `8861c0f` (v0.12)
+- **Commits in range (files):** `config/opencode.jsonc` (6-model unified catalog, single source), `bin/shared` (`build_pi_models_json()` + the python3 catalog transform + JSONC strip), `bin/ocs-rebuild-container` (derive + always-stage `pi-models.json`, opencode stub, `pi-base-url:` required for pi), `config/Dockerfile.pi-mini` + `config/Dockerfile.pi-full` + `config/Dockerfile.test` (`RUN cp` → `COPY pi-models.json`), `docker/entrypoint.sh` (refresh workspace `models.json` from the image bake on every door run), `bin/ocs-test` (`TEST_API` 13→14), `test/cases/30-model-pin.sh` (dual-engine catalog assertions + JSONC strip), `README.md` + `AGENTS.md` + `RELEASE_NOTES.md` (catalog sections)
+- **Tag (planned):** `RELEASE_V0.13-KIDELO` — not yet published (local milestone; publish + header bookkeeping on the next push)
+
+---
+
 ## v0.12 — second agent engine: the pi one-shot door + built-in LSP for both engines
 
 The sandbox now ships a **second agent engine** alongside OpenCode: **pi** (`@earendil-works/pi-coding-agent`, the `pi` CLI, pinned at 1.4.0) — with its own precompiled base images, one-shot and interactive doors, offline model resolution, and a built-in LSP extension. A project opts in via the `dockerfile:` key (`pi-mini` / `pi-full`); everything else (network isolation, resource limits, ro rootfs, firewall, the whole security suite) is unchanged and now **dual-engine-aware**. Both engines pin **`ornith-1.5:9b`** (context 131072) as the default sandbox model.

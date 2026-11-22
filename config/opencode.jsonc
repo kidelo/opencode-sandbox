@@ -49,9 +49,55 @@
         "timeout": 600000,
         "chunkTimeout": 600000
       },
+      // The model catalog — the single common source for BOTH engines.
+      // opencode reads this map directly (V2 `providers.ollama.models`).
+      // pi-agent reads the same catalog (translated into its per-model
+      // models.json schema at build time, with the `pi-base-url:` host:port
+      // injected into the baseUrl). Edit this map once; both engines follow.
       "models": {
         "ornith-1.5:9b": {
           "name": "Ornith 1.5 9B",
+          "modelID": "ornith-1.5:9b",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "lfm3:1.7b-q8_0": {
+          "name": "LFM3 1.7B Q8",
+          "modelID": "lfm3:1.7b-q8_0",
+          "limit": {
+            "context": 131072,
+            "output": 8192
+          }
+        },
+        "qwen3.8-27b": {
+          "name": "Qwen3.8 27B IQ3",
+          "modelID": "hf.co/bartowski/Qwen3.8-27B-GGUF:IQ3_XXS",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "gemma4:e4b": {
+          "name": "Gemma4 E4B",
+          "modelID": "gemma4:e4b",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "bonsai-2:9b": {
+          "name": "Bonsai-2 9B",
+          "modelID": "bonsai-2:9b",
+          "limit": {
+            "context": 131072,
+            "output": 16384
+          }
+        },
+        "mimo-v2.6:latest": {
+          "name": "MiMo v2.6",
+          "modelID": "mimo-v2.6:latest",
           "limit": {
             "context": 131072,
             "output": 16384

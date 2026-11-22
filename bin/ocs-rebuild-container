@@ -456,6 +456,37 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     echo "  pi-base-url: ${cfg_pi_base_url}"
     printf '%s\n' "${cfg_pi_base_url}" > "${STAGE_DIR}/pi-base-url"
     chmod u=rw,go= "${STAGE_DIR}/pi-base-url"
+
+    # Derive the pi models.json from the common catalog (config/opencode.jsonc
+    # "providers.ollama.models"). The transform reads the catalog + the
+    # staged pi-base-url and emits the baked models.json into the build
+    # context so the Dockerfile tails can COPY it in. A RUN cannot see the
+    # build context (it runs on the container filesystem) — only a COPY can —
+    # so the derived file must be a real build-context file, not generated at
+    # build time.
+    build_pi_models_json "${STAGE_DIR}/pi-models.json" "${cfg_pi_base_url}"
+  else
+    # opencode projects: the SHARED Dockerfile.test does an unconditional COPY
+    # of pi-models.json (the pi test image needs the per-project models.json;
+    # the opencode test image has no pi binary and never reads it). Stage a
+    # minimal valid models.json so that unconditional COPY always succeeds —
+    # it lands in the opencode image's /opt/ocs/pi-agent/ and is inert. (The
+    # working opencode tails, minimal/full, never COPY it, so this stub is
+    # only consumed by the test image.)
+    cat > "${STAGE_DIR}/pi-models.json" <<'JSON'
+{
+  "providers": {
+    "ollama": {
+      "api": "openai-completions",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "models": []
+    }
+  }
+}
+JSON
+    chmod u=rw,go= "${STAGE_DIR}/pi-models.json"
+    echo "  Staged a stub pi-models.json (opencode project — inert for the shared test COPY)"
   fi
 
   # Validate host-ports: bare TCP port, 1-65535 (same shape+range rule as the

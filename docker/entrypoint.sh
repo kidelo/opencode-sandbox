@@ -300,6 +300,13 @@ if [[ -d /opt/ocs/pi-agent ]]; then
     # shellcheck disable=SC2016
     gosu dev bash -c 'mkdir -p "$WORKSPACE_DIR/pi-agent" && cp -a /opt/ocs/pi-agent/. "$WORKSPACE_DIR/pi-agent/"'
   fi
+  # models.json is DERIVED, not user-owned: it is baked from the project's
+  # unified model catalog (config/opencode.jsonc) at build time, so it must
+  # always match the image bake — a stale workspace copy (from an older
+  # catalog) would shadow the new model set. Refresh it on EVERY door run
+  # (the rest of the tree — lsp.json, sessions, settings — stays user-owned).
+  # dev-owned target, dev writes the file (no CAP_CHOWN needed).
+  gosu dev cp -f /opt/ocs/pi-agent/models.json "${_pi_seed}/models.json"
   export PI_CODING_AGENT_DIR="${WORKSPACE_DIR}/pi-agent"
   # pi-lens (the built-in LSP + memory extension) auto-detects the language
   # server with zero config (its own global config lives in ~/.pi-lens/); it
