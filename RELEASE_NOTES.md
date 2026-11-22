@@ -6,7 +6,8 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub releases: `RELEASE_V0.11-KIDELO` (2026-11-21),
+Last published GitHub releases: `RELEASE_V0.13-KIDELO` (2026-11-22),
+`RELEASE_V0.11-KIDELO` (2026-11-21),
 `RELEASE_V0.10-KIDELO` (2026-11-04),
 `RELEASE_V0.9-KIDELO` (2026-11-04),
 `RELEASE_V0.8.2-KIDELO`, `RELEASE_V0.8.1-KIDELO`, `RELEASE_V0.8-KIDELO`,
@@ -52,7 +53,7 @@ The model list is now a **single catalog** in the project's `config/opencode.jso
 
 - **Base:** `8861c0f` (v0.12)
 - **Commits in range (files):** `config/opencode.jsonc` (6-model unified catalog, single source), `bin/shared` (`build_pi_models_json()` + the python3 catalog transform + JSONC strip), `bin/ocs-rebuild-container` (derive + always-stage `pi-models.json`, opencode stub, `pi-base-url:` required for pi), `config/Dockerfile.pi-mini` + `config/Dockerfile.pi-full` + `config/Dockerfile.test` (`RUN cp` → `COPY pi-models.json`), `docker/entrypoint.sh` (refresh workspace `models.json` from the image bake on every door run), `bin/ocs-test` (`TEST_API` 13→14), `test/cases/30-model-pin.sh` (dual-engine catalog assertions + JSONC strip), `README.md` + `AGENTS.md` + `RELEASE_NOTES.md` (catalog sections)
-- **Tag (planned):** `RELEASE_V0.13-KIDELO` — not yet published (local milestone; publish + header bookkeeping on the next push)
+- **Tag (published):** `RELEASE_V0.13-KIDELO` (2026-11-22)
 
 ---
 
@@ -1045,6 +1046,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
+| **v0.13** | **unified multi-model catalog** — `config/opencode.jsonc` `providers.ollama.models` is the single source for **both** engines (opencode reads it at runtime; pi derives `models.json` from it via `COPY`); **`pi-base-url:` now REQUIRED** for pi (host:port must be in `intranet-endpoints:`); `ocs init` derives `pi-base-url:` from the config's `baseURL` (no prompt); `config/ARCHITECTURE.md` documents the single source | `RELEASE_V0.13-KIDELO` (published) |
 | **v0.12** | **second agent engine: the pi one-shot door** (`dockerfile: pi-mini`/`pi-full`, precompiled `ocs-base-pi-minimal`/`ocs-base-pi` bases, offline `models.json` pin, `pi-plugins:` key) + **built-in LSP** (`pi-lsp@0.1.8` + pyright in the pi bases; opencode-v2-lsp-support in `ocs-base-full`) + **default model `ornith-1.5:9b`** (context 131072) + dual-engine `ocs test` (`TEST_API` 12, `ocs-base-image` reuse label) | `RELEASE_V0.12-KIDELO` (planned) |
 | **v0.11** | **OpenCode CLI 2.2.5 → 2.3.2 pin** (latest stable, verified against the release binary) + installed CLI version stamped as the `ocs-base-opencode` image label + `"update": "disable"` in the default config + `OCS_BASE_API` 9→10 + `TEST_API` 10→11 (a base re-bake is invisible to `image_is_current`) | `RELEASE_V0.11-KIDELO` (published) |
 | **v0.10** | **review remediation (14 defects)** — rebuild atomicity (staging + atomic commit), password no-rotation, `host-ports` validation, `ocs test` trap cleanup + harness EP `<subnet>.254` + case 15 pins the invariant (`TEST_API` 8→10), `run`/`plan` typo guard, terminal secret hygiene, test tiers documented, CHANGE-ME markers, deferred-pinning rationale, landlock docs | `RELEASE_V0.10-KIDELO` (published) |
