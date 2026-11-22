@@ -34,6 +34,16 @@ sandbox-network-cidr: 10.77.0.0/16
 # Defaults to `minimal` when unset. Requires a rebuild.
 dockerfile: full
 
+# --- pi agent extra plugins (pi one-shot door only) --------------------------
+# List of extra pi plugins to bake into the pi base image at rebuild time.
+# Format: npm:<name>@<version>. The container has NO runtime internet, so
+# plugins MUST be baked into the image (never `pi install` at runtime).
+# The base pi bake already includes `npm:@earendil-works/pi-subagents@0.89.2`
+# (the sub-agents plugin); this list ADDS to it. Leave commented out for the
+# stock pi bake. Requires a rebuild.
+# pi-plugins:
+#   # - npm:@earendil-works/pi-subagents@0.89.2
+
 # --- Per-project policy (all optional; the host-DoS guard values below are the
 # defaults applied when a key is unset, so you can leave them commented out) ---
 # memory:    4g          # docker --memory + --memory-swap. Form: Nk | Nm | Ng.

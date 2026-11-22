@@ -17,6 +17,48 @@ GitHub release tags.
 
 ---
 
+## v0.12 — second agent engine: the pi one-shot door + built-in LSP for both engines
+
+The sandbox now ships a **second agent engine** alongside OpenCode: **pi** (`@earendil-works/pi-coding-agent`, the `pi` CLI, pinned at 1.4.0) — with its own precompiled base images, one-shot and interactive doors, offline model resolution, and a built-in LSP extension. A project opts in via the `dockerfile:` key (`pi-mini` / `pi-full`); everything else (network isolation, resource limits, ro rootfs, firewall, the whole security suite) is unchanged and now **dual-engine-aware**. Both engines pin **`ornith-1.5:9b`** (context 131072) as the default sandbox model.
+
+### Highlights
+
+- **Pi engine — `dockerfile: pi-mini` / `pi-full`.** Two new selectable profiles plus two new precompiled bases: `ocs-base-pi-minimal` (lean: harness + prebuilt Node 24.22.3 + the pi bake, no opencode CLI) and `ocs-base-pi` (`FROM ocs-base-full`, so pi + full dev toolchain + the community LSP plugin). Engine detection is single-sourced as `project_engine()` in `bin/shared` (the `dockerfile:` key) and drives `ocs run`, `ocs tui`, `ocs test`, and the rebuild dispatch. Pi doors: `ocs run` → `pi --provider ollama --model '<id>' --print --no-approve --offline`; `ocs tui` → the pi interactive session (pi has no `-c`/`-s` resume — the flags are rejected on pi projects with a usage error). The web/plan/terminal doors stay opencode-only.
+- **Offline, pinned, local-ollama-only.** Both pi bases bake the pi-agent managed tree at `/opt/ocs/pi-agent`: the pi CLI (`npm install -g --ignore-scripts --prefix … pi-coding-agent@1.4.0`), the `pi-subagents@0.89.2` plugin, and a `models.json` with exactly one model — `ornith-1.5:9b` (provider `ollama`, `openai-completions`, the intranet endpoint, per-model `contextWindow: 131072` / `maxTokens: 16384` — pi's documented schema location). The container has no runtime internet, so `models.json` is what makes `pi --print --offline` resolve the model. `pi-plugins:` (new per-project key, shape-validated at rebuild) bakes extra `npm:<spec>` extensions into the image at build time via the per-project tails.
+- **Built-in LSP for pi — `pi-lsp@0.1.8`.** The pi bases install the `pi-lsp` extension by default (`pi install npm:pi-lsp@0.1.8`) and pre-configure its global `lsp.json` to the reference language server **`pyright-langserver --stdio`** (pyright 1.1.414 — npm package in the lean pi base, pip package in the full chain). pi-lsp registers LLM tools (`lsp_diagnostics`, `lsp_hover`, `lsp_definition`, `lsp_references`, `lsp_symbols`) and appends diagnostics to write/edit results. The entrypoint seeds the pi-agent tree into the workspace's persistent `pi-agent/` dir (first-run-only, dev-owned) and exports `PI_CODING_AGENT_DIR` / `PI_AGENT_DIR` + the baked `pi` on PATH. Verified end-to-end: a prompt drives the model to call `lsp_diagnostics`, which answers with pyright's structured diagnostics.
+- **LSP backup for OpenCode — `ocs-base-full`.** The community plugin **christensenjairus/opencode-v2-lsp-support** (V1-style `lsp` tool + post-edit error diagnostics for OpenCode V2; pyright as the reference server) is baked into `ocs-base-full` at `/opt/ocs/opencode-v2-lsp-support/` — fetched by `ocs rebuild` (`ensure_lsp_plugin_tarball()`, pinned GitHub tarball, layout-validated) into `config/plugin.tar.gz` (gitignored build artifact), SHA256-checked at build time (`LSP_SHA256` build arg, the tarball's own top-level dir unpacked to `/opt/ocs/`), and re-baked via the new `ocs-base-full-lsp` label when the tarball changes. `pyright` is added to the full-profile pip set.
+- **Default model `qwen3.8:27b` → `ornith-1.5:9b`** (context 196608 → 131072, output 32768 → 16384) in `config/opencode.jsonc` (model + `agents.title` + provider entry) and the shared `OPENCODE_MODEL` constant in `bin/shared`.
+- **`ocs test` is dual-engine.** `Dockerfile.test` now takes `ARG BASE_IMAGE` (default `ocs-base`); `ocs test` passes the project's own engine base (`ocs-base-pi-minimal` for pi) via `OCS_TEST_BASE_IMAGE`, and the test-image reuse check gains the `ocs-base-image` label. Cases 08/09 (AI red-team) and 30 (model pin) drive the engine's non-interactive form — `opencode run` on opencode projects, the baked `/opt/ocs/pi-agent/bin/pi` on pi projects (the entrypoint's PATH export is shell-local, so the cases use the absolute path) with `PI_CODING_AGENT_DIR` pointed at the workspace's writable `pi-agent/` seed (the baked `/opt/ocs/pi-agent` is on the read-only rootfs). `TEST_API` 11→12.
+- **Entrypoint pi-aware.** The password block is guarded by `[[ -f /opencode-password ]]` (the pi profiles bake no password file — pi has no web server / basic-auth); the pi-seeding block (guarded by `-d /opt/ocs/pi-agent`, absent in opencode profiles) runs **as dev via `gosu`** (no `CAP_CHOWN` — a root-side `cp -a` + `chown -R` fails EPERM), is first-run-only, and clears root-owned leftovers from pre-fix entrypoints (`stat -c %u` check).
+- **Pi-base reuse labels.** The pi bases are stamped with their own label set — `ocs-base-pi-uid`/`-gid`/`-deps` (single source `OCS_PI_BASE_DEPS` = `node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lsp@0.1.8`) — independent of `OCS_BASE_API` (which stays 12 and covers the opencode chain); `ocs-base-pi` additionally stamps `ocs-base-pi-upstream-api == OCS_BASE_API` so an opencode-chain bump re-bakes it.
+
+### Breaking changes
+
+- **Default sandbox model is now `ornith-1.5:9b`.** Existing projects pin their own model via the `model:` policy key or their own `config/opencode.jsonc` — no change needed unless a project relied on the default.
+- **`dockerfile: pi-mini`/`pi-full` projects do not support the web/plan/terminal doors** (no opencode server on the lean pi base) and reject `-c`/`-s` on `ocs tui`.
+
+### Upgrade steps
+
+- `git pull`, then `ocs rebuild <name>` per project — the two pi bases are built once per host on first use (`OCS_PI_BASE_DEPS` label set); existing opencode projects are unaffected by the pi chain (their profiles still build on `ocs-base`/`ocs-base-full`, and the full profile re-bakes only if the LSP plugin tarball changed — `ocs-base-full-lsp`). The self-hosted repo's own config is `full` (opencode) + the pi chain re-bakes on first pi use.
+- `ocs test` re-bakes its `-test` image automatically (`TEST_API` 12 + the new `ocs-base-image` label).
+
+### Verification
+
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+- Pi bake verified in-image: `ocs-base-pi-minimal` carries `pi-lsp@0.1.8` in `npm/node_modules/` + `settings.json` `packages[]` (`pi-subagents@0.89.2`, `pi-lsp@0.1.8`), `pyright-langserver` on PATH, the global `lsp.json` with the pyright server; `models.json` pins `ornith-1.5:9b` (131072/16384). `ocs-base-full` carries `/opt/ocs/opencode-v2-lsp-support/` (`index.ts` + 9 `src/` files).
+- LSP end-to-end: an `ocs run` prompt on a pi project drove the model to call `lsp_diagnostics`; pyright answered with structured diagnostics (a standalone file without a project root marker reports "no diagnostics" — expected, not a defect).
+- Entrypoint seeding verified: dev-owned seed, idempotent, root-leftover cleanup; `ocs run` exit 0, no cp errors, log line "pi-agent seeded at /workspace/pi-agent".
+- `ocs test` on the **self-hosted repo** (full/opencode): **29 passed, 0 failed, 1 skipped** — skip = case 04 squid-deny (`example.com` whitelisted for this project); case 08 red-team all six escapes blocked.
+- `ocs test` on the **pi-smoke project** (`dockerfile: pi-mini`, `agent-dns: deny`, the ollama intranet endpoint): **28 passed, 0 failed, 2 skipped** — case 08 red-team ran the pi one-shot door and reported all six escapes `blocked`, case 30 pin (`pi --list-models` → exactly `ornith-1.5:9b`, context limit present) PASS, case 24 skipped (no sensitive paths in that workspace).
+
+### Release metadata (v0.12)
+
+- **Base:** `c419bf3` (v0.11)
+- **Commits in range (files):** `bin/shared` (`project_engine()`, `OPENCODE_MODEL`), `bin/ocs-rebuild-container` (pi base builders + dispatch, `OCS_PI_BASE_DEPS`, `OCS_BASE_API` 11→12, `pi-plugins:` validation, `ensure_lsp_plugin_tarball()` + LSP label/arg), `bin/ocs-run` + `bin/ocs-interactive` (pi doors, resume-flag rejection), `bin/ocs-test` (`OCS_TEST_BASE_IMAGE`, `ocs-base-image` reuse label, `TEST_API` 12), `docker/entrypoint.sh` (password guard, pi seeding), `config/base-pi-minimal.Dockerfile` + `config/base-pi.Dockerfile` + `config/Dockerfile.pi-mini` + `config/Dockerfile.pi-full` (new), `config/base-full.Dockerfile` (LSP plugin bake + `pyright`), `config/Dockerfile.test` (`ARG BASE_IMAGE`), `config/opencode.jsonc` + `config/opencode-sandbox-config.yaml` (model pin, `pi-plugins:` template), `test/cases/08-agent-redteam.sh` + `test/cases/30-model-pin.sh` (dual-engine), `.gitignore` (`config/plugin.tar.gz`), `README.md` + `AGENTS.md` (pi engine + LSP sections), `RELEASE_NOTES.md`
+- **Tag (planned):** `RELEASE_V0.12-KIDELO` — not yet published (local milestone; publish + header bookkeeping on the next push)
+
+---
+
 ## v0.11 — OpenCode CLI 2.3.2 pin + installed-version stamp in the base images
 
 The sandbox now ships **OpenCode 2.3.2** (the latest stable, 2026-11-13), up from 2.2.5. The upgrade is verified against the actual 2.3.2 release binary, and the base images now stamp the **installed** CLI version as a label so the pin is inspectable without running a container.
@@ -960,6 +1002,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
+| **v0.12** | **second agent engine: the pi one-shot door** (`dockerfile: pi-mini`/`pi-full`, precompiled `ocs-base-pi-minimal`/`ocs-base-pi` bases, offline `models.json` pin, `pi-plugins:` key) + **built-in LSP** (`pi-lsp@0.1.8` + pyright in the pi bases; opencode-v2-lsp-support in `ocs-base-full`) + **default model `ornith-1.5:9b`** (context 131072) + dual-engine `ocs test` (`TEST_API` 12, `ocs-base-image` reuse label) | `RELEASE_V0.12-KIDELO` (planned) |
 | **v0.11** | **OpenCode CLI 2.2.5 → 2.3.2 pin** (latest stable, verified against the release binary) + installed CLI version stamped as the `ocs-base-opencode` image label + `"update": "disable"` in the default config + `OCS_BASE_API` 9→10 + `TEST_API` 10→11 (a base re-bake is invisible to `image_is_current`) | `RELEASE_V0.11-KIDELO` (published) |
 | **v0.10** | **review remediation (14 defects)** — rebuild atomicity (staging + atomic commit), password no-rotation, `host-ports` validation, `ocs test` trap cleanup + harness EP `<subnet>.254` + case 15 pins the invariant (`TEST_API` 8→10), `run`/`plan` typo guard, terminal secret hygiene, test tiers documented, CHANGE-ME markers, deferred-pinning rationale, landlock docs | `RELEASE_V0.10-KIDELO` (published) |
 | **v0.9** | **locales baked into the base images** (host-detected, `OCS_LOCALES`/`OCS_DEFAULT_LOCALE` build args, `ocs-base-locale` label, `OCS_BASE_API` 7→8) + **the model pin is now a tested contract** (case 30: catalog resolves to exactly the pinned model, context limit present) + 6 stale sandbox configs synced (local) | `RELEASE_V0.9-KIDELO` (published) |

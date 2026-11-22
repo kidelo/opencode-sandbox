@@ -1,32 +1,57 @@
 #!/usr/bin/env bash
-# Case 08: AI agent (opencode + configured model) red-teams the sandbox.
+# Case 08: AI agent (opencode, or pi + the configured model) red-teams the sandbox.
 # TIER: AI-model SMOKE tier (08/09) — needs a reachable model endpoint;
 # SKIPs without one. The other 28 cases are the deterministic core and
 # pass/fail independent of any model.
-# shellcheck source=/dev/null
-# The agent is instructed to try to escape and to log the outcome of each
+# Dual engine (v12+): opencode projects drive `opencode run --standalone`;
+# pi projects drive the pi one-shot door form
+# `pi --provider ollama --print --no-approve --offline` (pi hangs without
+# `< /dev/null` in non-TTY — stdin is closed).
+# The agent is instructed to try to break out and to log the outcome of each
 # attempt to /tmp/security-report.json. Case 09 then evaluates that report.
 # If the model endpoint is unreachable from the container (not
 # in intranet-endpoints), or the agent fails, this case SKIPs with a clear
 # reason — the deterministic cases 01-07 still provide the signal.
+# shellcheck source=/dev/null
 . "$(dirname "$0")/../common.sh"
 
 REPORT="/tmp/security-report.json"
 rm -f "${REPORT}"
 
-# Extract the model server endpoint from the project's opencode.jsonc. The
-# config is mounted read-only at /etc/opencode/opencode.jsonc (the agent's own
-# source of truth); fall back to the workspace for any legacy layout.
-jsonc="/etc/opencode/opencode.jsonc"
-if [[ ! -f "${jsonc}" ]]; then
-  jsonc="${WORKSPACE_DIR:-/workspace}/config/opencode.jsonc"
+# Engine detection: the pi binary is baked at /opt/ocs/pi-agent/bin/pi (pi
+# projects are built on the ocs-base-pi* bases). The cases run via
+# `docker exec -u dev` — the entrypoint exports PI_CODING_AGENT_DIR only in
+# its own shell, so the image path is the reliable signal, not PATH.
+if [[ -x /opt/ocs/pi-agent/bin/pi ]]; then
+  ENGINE="pi"
+else
+  ENGINE="opencode"
 fi
-if [[ ! -f "${jsonc}" ]]; then
-  jsonc="${WORKSPACE_DIR:-/workspace}/opencode.jsonc"
-fi
+
+# Extract the model server endpoint:
+#   pi      — the ollama provider's baseUrl from the baked
+#             /opt/ocs/pi-agent/models.json
+#   opencode — the ollama provider's baseURL from the mounted opencode.jsonc
+#             (the agent's own source of truth; the config is mounted
+#             read-only at /etc/opencode/opencode.jsonc; legacy workspace
+#             fallbacks preserved).
+# Empty when nothing parses — the reachability check below SKIPs then.
+PI_MODELS_JSON="/opt/ocs/pi-agent/models.json"
 base_url=""
-if [[ -f "${jsonc}" ]]; then
-  base_url="$(python3 - "${jsonc}" <<'PY' 2>/dev/null || true
+PI_MODEL_ID=""
+if [[ "${ENGINE}" == "pi" ]]; then
+  base_url="$(python3 -c 'import json; print(json.load(open("/opt/ocs/pi-agent/models.json"))["providers"]["ollama"]["baseUrl"])' 2>/dev/null || true)"
+  PI_MODEL_ID="$(python3 -c 'import json; print(json.load(open("/opt/ocs/pi-agent/models.json"))["providers"]["ollama"]["models"][0]["id"])' 2>/dev/null || true)"
+else
+  jsonc="/etc/opencode/opencode.jsonc"
+  if [[ ! -f "${jsonc}" ]]; then
+    jsonc="${WORKSPACE_DIR:-/workspace}/config/opencode.jsonc"
+  fi
+  if [[ ! -f "${jsonc}" ]]; then
+    jsonc="${WORKSPACE_DIR:-/workspace}/opencode.jsonc"
+  fi
+  if [[ -f "${jsonc}" ]]; then
+    base_url="$(python3 - "${jsonc}" <<'PY' 2>/dev/null || true
 import json, re, sys
 raw = open(sys.argv[1]).read()
 raw = re.sub(r'^\s*//.*$', '', raw, flags=re.M)
@@ -43,6 +68,7 @@ except Exception:
     pass
 PY
 )"
+  fi
 fi
 
 host_port=""
@@ -82,19 +108,36 @@ python3 -c \"import json; open('${REPORT}','w').write(json.dumps([ATTACK_1,ATTAC
 Then print exactly: DONE
 "
 
-echo ">> opencode run (model from ${jsonc}) — may take several minutes"
+echo ">> ${ENGINE} run (model from ${base_url:-${PI_MODELS_JSON}}${PI_MODEL_ID:+ (${PI_MODEL_ID})}) — may take several minutes"
 AGENT_TIMEOUT="${AGENT_TIMEOUT:-900}"
 LOG_FILE="/tmp/ocs-agent-run.log"
 
 AGENT_WS="/workspace"
 set +e
-# OpenCode 2's `opencode run` has no --dir flag — the working directory is the
-# CWD (or a positional <directory>), so cd into the workspace in a subshell.
-(
-  cd "${AGENT_WS}"
-  timeout "${AGENT_TIMEOUT}" env WORKSPACE_DIR="${AGENT_WS}" \
-    opencode run --standalone "$PROMPT" > "${LOG_FILE}" 2>&1
-)
+if [[ "${ENGINE}" == "pi" ]]; then
+  # pi one-shot door form: --offline (no startup network operations) and
+  # `< /dev/null` (pi --print hangs without it in non-TTY; the prompt is
+  # passed as a positional arg). NOTE: PI_CODING_AGENT_DIR must point at the
+  # workspace-seeded /workspace/pi-agent (the single rw dir), NOT the baked
+  # /opt/ocs/pi-agent — the test container runs with a read-only rootfs
+  # (--read-only), and `pi` writes auth.json + settings.json.lock into its
+  # agent dir → EROFS in /opt/ocs/pi-agent (case 30 has the same constraint).
+  PI_AGENT_DIR="${WORKSPACE_DIR:-/workspace}/pi-agent"
+  (
+    cd "${AGENT_WS}"
+    timeout "${AGENT_TIMEOUT}" env PI_CODING_AGENT_DIR="${PI_AGENT_DIR}" \
+      /opt/ocs/pi-agent/bin/pi --provider ollama --model "${PI_MODEL_ID}" \
+      --print --no-approve --offline "${PROMPT}" < /dev/null > "${LOG_FILE}" 2>&1
+  )
+else
+  # OpenCode 2's `opencode run` has no --dir flag — the working directory is the
+  # CWD (or a positional <directory>), so cd into the workspace in a subshell.
+  (
+    cd "${AGENT_WS}"
+    timeout "${AGENT_TIMEOUT}" env WORKSPACE_DIR="${AGENT_WS}" \
+      opencode run --standalone "$PROMPT" > "${LOG_FILE}" 2>&1
+  )
+fi
 rc=$?
 set -e
 

@@ -105,6 +105,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
    VOLUME_MOUNTS="${STAGE_DIR}/volume-mounts.txt"
    READ_ONLY_MOUNTS="${STAGE_DIR}/read-only-mounts.txt"
    SENSITIVE_PATHS="${STAGE_DIR}/sensitive-paths.txt"
+   PI_PLUGINS="${STAGE_DIR}/pi-plugins.txt"
    true > "${SQUID_WHITELIST}"
    true > "${HOST_PORTS}"
    true > "${INTRANET_ENDPOINTS}"
@@ -113,6 +114,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
    true > "${VOLUME_MOUNTS}"
    true > "${READ_ONLY_MOUNTS}"
    true > "${SENSITIVE_PATHS}"
+   true > "${PI_PLUGINS}"
 
    # ---------------------------------------------------------------------------
    # Scalar flags — top-level "key: value" entries (not sections).
@@ -141,6 +143,10 @@ if [[ -f "${CONFIG_FILE}" ]]; then
        cfg_landlock="off"
        cfg_egress_audit="off"
        cfg_nofile=""
+       # pi agent extra plugins (pi one-shot door only; the `pi-plugins:` config
+       # key, validated to `npm:<name>@<version>` sources, baked into the
+       # pi-mini/pi-full images at build time). The base bake already includes
+       # the sub-agents plugin (OCS_PI_BASE_DEPS).
 
   section=""
   while IFS= read -r line || [[ -n "${line}" ]]; do
@@ -197,6 +203,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
         host-ports)            echo "${value}" >> "${HOST_PORTS}" ;;
         intranet-endpoints)    echo "${value}" >> "${INTRANET_ENDPOINTS}" ;;
         sensitive-paths)       echo "${value}" >> "${SENSITIVE_PATHS}" ;;
+        pi-plugins)            printf '%s ' "${value}" >> "${PI_PLUGINS}" ;;
       esac
       continue
     fi
@@ -301,7 +308,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     fi
   fi
   if [[ -n "${cfg_model}" ]]; then
-    # Provider/model identifier, e.g. 'ollama/qwen3.8:27b' or
+    # Provider/model identifier, e.g. 'ollama/ornith-1.5:9b' or
     # 'openai/gpt-4o-mini'. Allowed characters: letters, digits and
     # separators '_'/'/'/':'/'.'/'-'. Must start with an alphanumeric.
     if [[ ! "${cfg_model}" =~ ^[a-zA-Z0-9][a-zA-Z0-9_/:.\-]*$ ]]; then
@@ -340,6 +347,20 @@ if [[ -f "${CONFIG_FILE}" ]]; then
       exit 1
     fi
   done < "${SENSITIVE_PATHS}"
+
+  # pi-plugins: extra `npm:<spec>` sources for the pi one-shot door (the pi-mini
+  # / pi-full tails install them at image-build time — the container has no
+  # runtime internet, so extra plugins must already be baked in). Validate the
+  # shape so a typo fails the rebuild instead of the container build.
+  while IFS= read -r pline || [[ -n "${pline}" ]]; do
+    for ptok in ${pline}; do
+      [[ -z "${ptok}" ]] && continue
+      if [[ ! "${ptok}" =~ ^npm:[A-Za-z0-9@/._~+-]+$ ]]; then
+        echo "ERROR: pi-plugins entry '${ptok}' is not a valid 'npm:<name>@<version>' source." >&2
+        exit 1
+      fi
+    done
+  done < "${PI_PLUGINS}"
 
   POLICY_FILE="${STAGE_DIR}/policy.txt"
   {
@@ -424,6 +445,10 @@ if [[ -f "${CONFIG_FILE}" ]]; then
   echo "  Extracted $(wc -l < "${VOLUME_MOUNTS}") volume mount(s) into volume-mounts.txt"
   echo "  Extracted $(wc -l < "${READ_ONLY_MOUNTS}") read-only mount(s) into read-only-mounts.txt"
   echo "  Extracted $(wc -l < "${SENSITIVE_PATHS}") extra sensitive path(s) into sensitive-paths.txt"
+  _pi_n="$(tr ' ' '\n' < "${PI_PLUGINS}" | grep -c . || true)"
+  if [[ "${_pi_n}" -gt 0 ]]; then
+    echo "  pi-plugins: ${_pi_n} extra plugin(s) into pi-plugins.txt"
+  fi
     echo "  OpenCode HTTP port: ${PORT}"
     echo "  Agent DNS (dev uid): ${cfg_agent_dns} ($( [[ ${cfg_agent_dns} == deny ]] && echo 'DNS tunnel blocked' || echo 'DNS tunnel OPEN by config' ))"
     echo "  Sandbox network range: ${cfg_sandbox_network_cidr} (each sandbox gets its own /24)"
@@ -525,8 +550,19 @@ fi
 # sandbox ships (passed to base.Dockerfile as --build-arg). Bumping it (and
 # OCS_BASE_API, since base.Dockerfile's layer set effectively changes) forces
 # both level base images to be rebuilt on the next ocs rebuild.
-OCS_BASE_API="10"
+#
+# The pi chain has its own version constant (OCS_PI_BASE_DEPS): the pi bases
+# are independent of the opencode base chain (pi needs no opencode CLI) and
+# are NOT driven by OCS_BASE_API — except ocs-base-pi (FROM ocs-base-full),
+# which stamps ocs-base-pi-upstream-api == OCS_BASE_API so a bump there
+# invalidates it too.
+OCS_BASE_API="12"
 OPENCODE_BUILD_VERSION="2.3.2"
+# Single source of the pi-bake stack version (stamped as the
+# ocs-base-pi-deps label and checked in the pi-base reuse keys): the pi CLI +
+# extra plugins baked into the pi bases. Node version tracks the prebuilt
+# toolchain in the bases (v24.22.3, pinned there as ARG NODE_VERSION).
+OCS_PI_BASE_DEPS="node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lsp@0.1.8"
 
 # --- Locales -----------------------------------------------------------------
 # Detect the host's UTF-8-capable locales (`locale -a`) and use them for the
@@ -567,7 +603,8 @@ echo "  Locales: ${HOST_LOCALES} (default: ${HOST_LOCALE_DEFAULT})"
 ensure_base_image() {
   local tag="${1:?base image name is required}"
   local dockerfile="${2:?base Dockerfile path is required}"
-  local base_uid="" base_gid="" base_api=""
+  local lsp_sha="${3:-}"
+  local base_uid="" base_gid="" base_api="" base_lsp_sha=""
   # `|| true`: inspect exits non-zero when the base image does not exist YET —
   # that is exactly the first-build case, not an error. (A bare assignment
   # with a failing command substitution would abort the script under set -e.)
@@ -577,9 +614,18 @@ ensure_base_image() {
   # The base now also bakes host-detected locales — a cached base from a
   # different locale set is stale, so the set is part of the reuse check.
   base_locale="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-locale"}}' "${tag}" 2>/dev/null)" || true
+  # ocs-base-full stamps the sha256 of the LSP plugin tarball
+  # (config/plugin.tar.gz — see ensure_lsp_plugin_tarball) — a plugin-tarball
+  # change must re-bake the base (the Dockerfile runs `sha256sum --check`
+  # when the LSP_SHA256 build arg is set).
+  if [[ "${tag}" == "ocs-base-full" ]]; then
+    base_lsp_sha="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-full-lsp"}}' "${tag}" 2>/dev/null)" || true
+  fi
   if [[ "${base_uid}" == "${USER_ID}" && "${base_gid}" == "${GROUP_ID}" && "${base_api}" == "${OCS_BASE_API}" && "${base_locale}" == "${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" ]]; then
-    echo "  ✓ Reusing precompiled base image '${tag}' — skipping its shared layers"
-    return 0
+    if [[ "${tag}" != "ocs-base-full" || "${base_lsp_sha}" == "${lsp_sha:-none}" ]]; then
+      echo "  ✓ Reusing precompiled base image '${tag}' — skipping its shared layers"
+      return 0
+    fi
   fi
   if [[ ! -f "${dockerfile}" ]]; then
     echo "  ERROR: ${dockerfile} is required to (re)build the precompiled base image '${tag}'." >&2
@@ -588,12 +634,23 @@ ensure_base_image() {
   echo "Building precompiled base image '${tag}' (one-time per host; shared by all projects)..."
   local base_log
   base_log="${OPENCODE_SANDBOX_DIR}/docker-build-base.log"
+  # ocs-base-full: the LSP_SHA256 build arg (sha of the plugin tarball in the
+  # build context) enables the Dockerfile's `sha256sum --check`; the label is
+  # the reuse key (see the LSP_SHA256 logic above).
+  local _lsp_flags=()
+  if [[ "${tag}" == "ocs-base-full" ]]; then
+    _lsp_flags+=(
+      --build-arg "LSP_SHA256=${lsp_sha:-none}"
+      --label "ocs-base-full-lsp=${lsp_sha:-none}"
+    )
+  fi
   if "${CONTAINER_RUNTIME}" build \
     --build-arg "USER_ID=${USER_ID}" \
     --build-arg "GROUP_ID=${GROUP_ID}" \
     --build-arg "OPENCODE_BUILD_VERSION=${OPENCODE_BUILD_VERSION}" \
     --build-arg "OCS_LOCALES=${HOST_LOCALES}" \
     --build-arg "OCS_DEFAULT_LOCALE=${HOST_LOCALE_DEFAULT}" \
+    ${_lsp_flags[@]+"${_lsp_flags[@]}"} \
     --label "ocs-base-uid=${USER_ID}" \
     --label "ocs-base-gid=${GROUP_ID}" \
     --label "ocs-base-api=${OCS_BASE_API}" \
@@ -610,13 +667,187 @@ ensure_base_image() {
   fi
 }
 
-# Every profile needs the plain base; only the `full` profile additionally
-# pulls in the full-toolchain pseudo-base (the `test` profile adds just its
-# own network-analysis tools straight on ocs-base).
-ensure_base_image "ocs-base" "${SANDBOX_HOME}/config/base.Dockerfile"
-if [[ "${DOCKERFILE_NAME}" == "full" ]]; then
-  ensure_base_image "ocs-base-full" "${SANDBOX_HOME}/config/base-full.Dockerfile"
-fi
+# --- LSP plugin tarball (ocs-base-full only) ---------------------------------
+# config/Dockerfile.base-full does `COPY plugin.tar.gz` — the community LSP
+# plugin: github.com/christensenjairus/opencode-v2-lsp-support (a V1-style
+# `lsp` tool + post-edit error diagnostics for OpenCode V2; pyright-langserver
+# is the reference server; loaded from /opt/ocs/opencode-v2-lsp-support). The
+# tarball must be in the build context (config/). This fetches it when missing
+# and returns the sha256 of the final config/plugin.tar.gz (empty if the file
+# was already there). The layout must match the Dockerfile: the tarball has a
+# single top-level dir `opencode-v2-lsp-support/` (its `--strip-components=1`
+# extracts it as /opt/ocs/opencode-v2-lsp-support).
+LSP_PLUGIN_SOURCE_URL="https://github.com/christensenjairus/opencode-v2-lsp-support/archive/refs/heads/main.tar.gz"
+
+ensure_lsp_plugin_tarball() {
+  local tfile="${SANDBOX_HOME}/config/plugin.tar.gz"
+  local sha
+  if [[ -f "${tfile}" ]]; then
+    sha="$(sha256sum "${tfile}" | awk '{print $1}')"
+    printf '%s\n' "${sha}"
+    return 0
+  fi
+  echo "Fetching the LSP plugin tarball (${LSP_PLUGIN_SOURCE_URL}) ..." >&2
+  local tmp
+  tmp="$(mktemp -d)"
+  if ! curl -fsSL --max-time 120 "${LSP_PLUGIN_SOURCE_URL}" -o "${tmp}/src.tar.gz" 2>/dev/null \
+     || [[ ! -s "${tmp}/src.tar.gz" ]]; then
+    echo "ERROR: could not fetch the LSP plugin tarball (see ${LSP_PLUGIN_SOURCE_URL})." >&2
+    echo "       Place a plugin.tar.gz (a top-level dir 'opencode-v2-lsp-support/') into config/ and re-run." >&2
+    rm -rf "${tmp}"
+    return 1
+  fi
+  if ! tar -xzf "${tmp}/src.tar.gz" -C "${tmp}" 2>/dev/null \
+     || [[ ! -f "${tmp}/opencode-v2-lsp-support-main/index.ts" ]]; then
+    echo "ERROR: fetched LSP tarball has an unexpected layout (expected a 'opencode-v2-lsp-support-main/' dir with index.ts)." >&2
+    echo "       Place a correctly packed plugin.tar.gz into config/ and re-run." >&2
+    rm -rf "${tmp}"
+    return 1
+  fi
+  if ! mv "${tmp}/opencode-v2-lsp-support-main" "${tmp}/opencode-v2-lsp-support"; then
+    echo "ERROR: could not repack the LSP plugin dir." >&2
+    rm -rf "${tmp}"
+    return 1
+  fi
+  if ! tar -czf "${tfile}" -C "${tmp}" opencode-v2-lsp-support; then
+    echo "ERROR: could not write ${tfile}." >&2
+    rm -rf "${tmp}"
+    return 1
+  fi
+  sha="$(sha256sum "${tfile}" | awk '{print $1}')"
+  rm -rf "${tmp}"
+  printf '%s\n' "${sha}"
+}
+
+# --- pi bases (precompiled, independent of the opencode base chain) --------
+# The pi profiles build two precompiled bases of their own:
+#   ocs-base-pi-minimal — FROM python:3.13-slim + the harness + pi bake
+#   ocs-base-pi         — FROM ocs-base-full + the pi bake
+# They deliberately sit OFF the ocs-base/ocs-base-full chain (pi is a separate
+# engine and needs no opencode CLI). Their reuse keys are the ocs-base-pi-*
+# label set (see OCS_PI_BASE_DEPS); ocs-base-pi additionally stamps
+# ocs-base-pi-upstream-api == OCS_BASE_API so an opencode-base-chain bump
+# (which re-bakes ocs-base-full) invalidates it — otherwise a cached
+# ocs-base-pi built FROM the old ocs-base-full would stay "current".
+# Like the opencode bases, the labels are stamped via --label at build time
+# (Docker labels do not survive `FROM` — the working images carry none).
+ensure_pi_base_minimal() {
+  local tag="${1:?base image name is required}"
+  local dockerfile="${2:?base Dockerfile path is required}"
+  local base_uid="" base_gid="" base_deps="" base_locale=""
+  # `|| true`: inspect exits non-zero when the base image does not exist YET
+  # — the first-build case, not an error (see ensure_base_image).
+  base_uid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-uid"}}' "${tag}" 2>/dev/null)" || true
+  base_gid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-gid"}}' "${tag}" 2>/dev/null)" || true
+  base_deps="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-deps"}}' "${tag}" 2>/dev/null)" || true
+  base_locale="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-locale"}}' "${tag}" 2>/dev/null)" || true
+  if [[ "${base_uid}" == "${USER_ID}" && "${base_gid}" == "${GROUP_ID}" && "${base_deps}" == "${OCS_PI_BASE_DEPS}" && "${base_locale}" == "${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" ]]; then
+    echo "  ✓ Reusing precompiled pi base image '${tag}' — skipping its shared layers"
+    return 0
+  fi
+  if [[ ! -f "${dockerfile}" ]]; then
+    echo "  ERROR: ${dockerfile} is required to (re)build the precompiled pi base image '${tag}'." >&2
+    exit 1
+  fi
+  echo "Building precompiled pi base image '${tag}' (one-time per host; shared by all pi-mini/pi-full projects)..."
+  local base_log
+  base_log="${OPENCODE_SANDBOX_DIR}/docker-build-base.log"
+  if "${CONTAINER_RUNTIME}" build \
+    --build-arg "USER_ID=${USER_ID}" \
+    --build-arg "GROUP_ID=${GROUP_ID}" \
+    --build-arg "OCS_LOCALES=${HOST_LOCALES}" \
+    --build-arg "OCS_DEFAULT_LOCALE=${HOST_LOCALE_DEFAULT}" \
+    --label "ocs-base-pi-uid=${USER_ID}" \
+    --label "ocs-base-pi-gid=${GROUP_ID}" \
+    --label "ocs-base-pi-deps=${OCS_PI_BASE_DEPS}" \
+    --label "ocs-base-pi-locale=${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" \
+    -t "${tag}" \
+    -f "${dockerfile}" \
+    "${SANDBOX_HOME}/config" > "${base_log}" 2>&1; then
+    echo "  ✓ Base image '${tag}' ready"
+  else
+    echo "  ✗ Base image build failed. Output:"
+    cat "${base_log}"
+    exit 1
+  fi
+}
+
+ensure_pi_base_full() {
+  local tag="${1:?base image name is required}"
+  local dockerfile="${2:?base Dockerfile path is required}"
+  local base_uid="" base_gid="" base_deps="" base_upstream="" base_locale=""
+  base_uid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-uid"}}' "${tag}" 2>/dev/null)" || true
+  base_gid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-gid"}}' "${tag}" 2>/dev/null)" || true
+  base_deps="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-deps"}}' "${tag}" 2>/dev/null)" || true
+  base_upstream="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-upstream-api"}}' "${tag}" 2>/dev/null)" || true
+  base_locale="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-locale"}}' "${tag}" 2>/dev/null)" || true
+  if [[ "${base_uid}" == "${USER_ID}" && "${base_gid}" == "${GROUP_ID}" && "${base_deps}" == "${OCS_PI_BASE_DEPS}" && "${base_upstream}" == "${OCS_BASE_API}" && "${base_locale}" == "${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" ]]; then
+    echo "  ✓ Reusing precompiled pi base image '${tag}' — skipping its shared layers"
+    return 0
+  fi
+  if [[ ! -f "${dockerfile}" ]]; then
+    echo "  ERROR: ${dockerfile} is required to (re)build the precompiled pi base image '${tag}'." >&2
+    exit 1
+  fi
+  echo "Building precompiled pi base image '${tag}' (one-time per host; shared by all pi-full projects)..."
+  local base_log
+  base_log="${OPENCODE_SANDBOX_DIR}/docker-build-base.log"
+  if "${CONTAINER_RUNTIME}" build \
+    --build-arg "USER_ID=${USER_ID}" \
+    --build-arg "GROUP_ID=${GROUP_ID}" \
+    --label "ocs-base-pi-uid=${USER_ID}" \
+    --label "ocs-base-pi-gid=${GROUP_ID}" \
+    --label "ocs-base-pi-deps=${OCS_PI_BASE_DEPS}" \
+    --label "ocs-base-pi-upstream-api=${OCS_BASE_API}" \
+    --label "ocs-base-pi-locale=${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" \
+    -t "${tag}" \
+    -f "${dockerfile}" \
+    "${SANDBOX_HOME}/config" > "${base_log}" 2>&1; then
+    echo "  ✓ Base image '${tag}' ready"
+  else
+    echo "  ✗ Base image build failed. Output:"
+    cat "${base_log}"
+    exit 1
+  fi
+}
+
+# --- Ensure the precompiled bases the profile needs ----------------------------
+# Engine dispatch:
+#   minimal/full  -> ocs-base (+ ocs-base-full when full)
+#   pi-mini       -> ocs-base-pi-minimal
+#   pi-full       -> ocs-base + ocs-base-full + ocs-base-pi (the pi bake rides
+#                    on the full toolchain — pyright/LSP — inherited via
+#                    ocs-base-pi FROM ocs-base-full)
+#   test          -> the project's own engine base (chosen by ocs-test via
+#                    the OCS_TEST_BASE_IMAGE env: `ocs-base-pi-minimal` for
+#                    pi projects, `ocs-base` otherwise) — the TEST image is
+#                    FROM it (Dockerfile.test's ARG BASE_IMAGE).
+case "${DOCKERFILE_NAME}" in
+  pi-mini)
+    ensure_pi_base_minimal "ocs-base-pi-minimal" "${SANDBOX_HOME}/config/base-pi-minimal.Dockerfile"
+    ;;
+  pi-full)
+    ensure_base_image "ocs-base" "${SANDBOX_HOME}/config/base.Dockerfile"
+    _lsp_sha="$(ensure_lsp_plugin_tarball)"
+    ensure_base_image "ocs-base-full" "${SANDBOX_HOME}/config/base-full.Dockerfile" "${_lsp_sha}"
+    ensure_pi_base_full "ocs-base-pi" "${SANDBOX_HOME}/config/base-pi.Dockerfile"
+    ;;
+  test)
+    if [[ "${OCS_TEST_BASE_IMAGE:-ocs-base}" == "ocs-base-pi-minimal" ]]; then
+      ensure_pi_base_minimal "ocs-base-pi-minimal" "${SANDBOX_HOME}/config/base-pi-minimal.Dockerfile"
+    else
+      ensure_base_image "ocs-base" "${SANDBOX_HOME}/config/base.Dockerfile"
+    fi
+    ;;
+  full)
+    ensure_base_image "ocs-base" "${SANDBOX_HOME}/config/base.Dockerfile"
+    _lsp_sha="$(ensure_lsp_plugin_tarball)"
+    ensure_base_image "ocs-base-full" "${SANDBOX_HOME}/config/base-full.Dockerfile" "${_lsp_sha}"
+    ;;
+  *)
+    ensure_base_image "ocs-base" "${SANDBOX_HOME}/config/base.Dockerfile"
+    ;;
+esac
 
 echo "Building Container Image '${BUILD_IMAGE_TAG}' from Dockerfile.${DOCKERFILE_NAME} (USER_ID=${USER_ID} GROUP_ID=${GROUP_ID})..."
 BUILD_LOG="${OPENCODE_SANDBOX_DIR}/docker-build.log"

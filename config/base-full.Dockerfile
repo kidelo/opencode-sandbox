@@ -15,12 +15,20 @@
 #   python:3.13-slim-bookworm  <-  ocs-base   <-  ocs-base-full  <-  Dockerfile.full (per-project tail)
 #
 # Rebuilt automatically when OCS_BASE API changes (bump in bin/ocs-rebuild-container)
-# or the host uid:gid changes (the dev user is baked with them).
+# or the host uid:gid changes (the dev user is baked with them), or when the
+# LSP plugin tarball in the build context changes (the `ocs-base-full-lsp`
+# label + `LSP_SHA256` arg — see AGENTS.md: OpenCode LSP/Plugin).
 # ==========================================================================
 
 FROM ocs-base
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Build arg for the baked community LSP plugin: the SHA256 of the pinned
+# tarball (set by `ocs rebuild`; "none" = skip the integrity check — see
+# AGENTS.md "OpenCode LSP/Plugin"). Declared with a default so the profile
+# builds cleanly even when the arg is not passed.
+ARG LSP_SHA256="none"
 
 # Already in ocs-base (do NOT re-declare): build-essential, curl,
 # ca-certificates, git, xdg-utils, gosu, procps, squid, iptables, iproute2,
@@ -312,4 +320,28 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
         # SCIENCE — cluster C: classical ML (xgboost dropped)
         scikit-learn \
         statsmodels \
-        lightgbm
+        lightgbm \
+        \
+        # PYTHON LSP (OpenCode V2 has no LSP runtime; pyright is the reference
+        # language server. The open-source community plugin that reads the V2
+        # `lsp` config block and drives pyright-langserver is baked below. See
+        # AGENTS.md: "OpenCode LSP/Plugin — pyright + community plugin".)
+        pyright
+        # COMMUNITY LSP PLUGIN (full profile only — baked, pinned, SHA-checked)
+        # Fetched by `ocs rebuild` from the build context at ${OPENCODE_SANDBOX_DIR}/plugin.tar.gz
+        # and unpacked here into /opt/ocs. NOT present in the minimal/test
+        # profiles (they never COPY the tarball, so it stays out of the build
+        # context and out of the image entirely). See AGENTS.md.
+        COPY plugin.tar.gz /opt/ocs/opencode-v2-lsp-support.tar.gz
+        RUN chmod a+r /opt/ocs/opencode-v2-lsp-support.tar.gz \
+            && if [ "${LSP_SHA256}" != "none" ]; then \
+                  printf '%s  %s\n' "${LSP_SHA256}" /opt/ocs/opencode-v2-lsp-support.tar.gz \
+                    | sha256sum -c - ; \
+                else \
+                  echo "WARNING: LSP_SHA256 unset — plugin installed WITHOUT integrity check (see AGENTS.md)"; \
+                fi \
+            && tar -xzf /opt/ocs/opencode-v2-lsp-support.tar.gz -C /opt/ocs \
+            && rm /opt/ocs/opencode-v2-lsp-support.tar.gz \
+            && chmod a+rwx /opt/ocs/opencode-v2-lsp-support/index.ts \
+            && chmod a+rwx /opt/ocs/opencode-v2-lsp-support/src/*.ts \
+            && chmod a+rwx /opt/ocs/opencode-v2-lsp-support/*.ts

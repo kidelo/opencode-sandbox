@@ -202,6 +202,24 @@ use_sandbox_root() {
   refresh_root_paths "${detected_root}"
 }
 
+# Engine of the project — single source for door engine detection is the
+# `dockerfile:` key of the project config (config/opencode-sandbox-config.yaml).
+# Returns "pi" for the pi profiles (pi-mini, pi-full) and "opencode"
+# otherwise (incl. the default). Image labels cannot be used: they do not
+# survive `FROM` (the per-project working images carry none), so the config
+# is the host-side ground truth.
+project_engine() {
+  local d
+  d="$(sed -n 's/^dockerfile:[[:space:]]*//p' "${CONFIG_FILE:-}" 2>/dev/null | head -n 1 || true)"
+  d="${d%%#*}"
+  d="$(printf '%s' "${d}" | tr -d '[:space:]')"
+  if [[ "${d}" == "pi-mini" || "${d}" == "pi-full" ]]; then
+    echo "pi"
+  else
+    echo "opencode"
+  fi
+}
+
 print_sandbox_dir() {
   echo ">> using sandbox directory: ${OPENCODE_SANDBOX_DIR}"
 }
@@ -210,7 +228,7 @@ refresh_root_paths "${ROOT_DIR}"
 
 # The CLI entrypoints (ocs-interactive, ocs-run) pin this model with -m so no
 # in-session override is possible. Keep in sync with 'model' in config/opencode.jsonc.
-OPENCODE_MODEL="ollama/qwen3.8:27b"
+OPENCODE_MODEL="ornith-1.5:9b"
 
 # Container runtime: prefer docker, fall back to podman
 if command -v docker >/dev/null 2>&1; then

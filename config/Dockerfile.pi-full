@@ -1,0 +1,62 @@
+# ==========================================================================
+# Dockerfile.pi-full — thin per-project tail for the pi one-shot door (full).
+#
+# Builds on the precompiled "full pi" base image `ocs-base-pi`
+# (base-pi.Dockerfile, created by `ocs rebuild` before this file is built).
+# That base already carries: the Debian base + the common sandbox-harness apt
+# set + the `dev` user + dirs + the git-hook neutralization + the xdg-open
+# stub + the prebuilt Node.js toolchain + the baked pi-agent managed tree +
+# models.json (so `pi --print --offline` resolves the model with no internet)
+# PLUS the full dev toolchain (shellcheck, CSV/OCR/PDF/graphviz/fonts/…) and
+# the large pip data/office/PDF/OCR/sci stack + the community LSP plugin (all
+# inherited from `ocs-base-full`) and any pi-plugins: entries (baked at build
+# time by the block below).
+#
+# This profile adds ONLY the PER-PROJECT configuration variables: the squid
+# whitelist/config, host-ports, intranet-endpoints, agent-dns, landlock helper,
+# and the entrypoint.
+#
+# NOTE: unlike the opencode profiles, there is NO /opencode-password block —
+# pi is a separate engine with no web server / basic-auth password. The
+# entrypoint pi-guards the password block line (it never reads /opencode-
+# password for pi).
+#
+# Layers: python:3.13-slim-bookworm <- ocs-base <- ocs-base-full <- ocs-base-pi
+#          <- THIS (tail)
+# ==========================================================================
+
+FROM ocs-base-pi
+
+# --- squid proxy configuration ----------------------------------------------
+COPY squid.conf /etc/squid/squid.conf
+COPY squid-whitelist.txt /etc/squid/squid-whitelist.txt
+
+# --- firewall configuration ---------------------------------------------------
+COPY host-ports.txt /etc/host-ports.txt
+COPY intranet-endpoints.txt /etc/intranet-endpoints.txt
+COPY agent-dns /etc/agent-dns
+COPY landlock /etc/landlock
+COPY egress-audit /etc/egress-audit
+
+# --- landlock kernel-boundary helper (opt-in) ---------------------------------
+COPY landlock.py /opt/ocs/landlock.py
+RUN chmod 0644 /opt/ocs/landlock.py
+
+# --- per-project pi plugins (`pi-plugins:` config key) -------------------------
+# pi-plugins.txt (space-separated `npm:<spec>` sources, validated by
+# `ocs rebuild`) is baked here: extra plugins must already be in the image —
+# the container has no runtime internet (pi itself runs `--print --offline`).
+# (pi-subagents@0.89.2 is in both pi bases already.)
+COPY pi-plugins.txt /tmp/pi-plugins.txt
+RUN set -e ; \
+    for p in $(cat /tmp/pi-plugins.txt); do \
+      PI_CODING_AGENT_DIR=/opt/ocs/pi-agent /opt/ocs/pi-agent/bin/pi install "${p}" ; \
+    done
+RUN rm -f /tmp/pi-plugins.txt
+
+# --- entrypoint ---------------------------------------------------------------
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+WORKDIR /workspace
+ENTRYPOINT ["/entrypoint.sh"]

@@ -5,28 +5,32 @@
 # profile. The `ocs test` command builds this image under a separate tag
 # (`ocs-<SANDBOX_ID>-test`) so it never clobbers the project's working image.
 #
-# Builds on the precompiled shared base image `ocs-base` (base.Dockerfile,
-# created by `ocs rebuild` before any profile is built). `ocs-base` already
-# has the Debian base, the common apt set (the sandbox harness: squid/
-# iptables/gosu/iproute2/iputils-ping/netcat-openbsd/dnsutils/whois), the
-# `dev` user + dirs, the opencode CLI, and the xdg-open stub. This profile
-# adds ONLY the network-analysis toolbox + `jq` (plus the reserved
-# harness egress args and the listener) that the test suite needs.
-# ============================================================================
+# Builds on the project's ENGINE base (ARG BASE_IMAGE, passed to `docker
+# build` by `ocs test`): `ocs-base` for opencode projects,
+# `ocs-base-pi-minimal` for pi projects (so the suite detects the baked `pi`
+# binary — the cases detect the engine via `command -v pi` /
+# `command -v opencode`).
+# The base already has the Debian base, the common apt set (the sandbox
+# harness: squid/iptables/gosu/iproute2/iputils-ping/netcat-openbsd/dnsutils/
+# whois) — plus the engine bake: the pi-agent managed tree + models.json for
+# the pi bases (so `pi --print --offline` resolves the model with no internet)
+# or the opencode CLI for the `ocs-base` default. This profile adds ONLY what
+# the network-analysis suite needs beyond that base: the network-analysis
+# toolbox + `jq` + the reserved harness egress args + the listener.
+# ==========================================================================
 
-FROM ocs-base
+ARG BASE_IMAGE=ocs-base
+FROM ${BASE_IMAGE}
 
 # USER_ID / GROUP_ID: the base image already baked in the dev user with these
-# IDs (`ocs-base` was built with the same `--build-arg USER_ID/GROUP_ID`), so
-# the profile build needs them only to `chown /mnt/ocs-fwd` below. The rest of
-# the harness (apt set, `dev` dirs, opencode CLI, xdg-open stub, ENV) comes
-# prebuilt from the ocs-base image.
+# IDs (both engine bases are built with the same `--build-arg USER_ID/
+# GROUP_ID`), so the profile build needs them only to `chown /mnt/ocs-fwd` below.
 ARG USER_ID
 ARG GROUP_ID
 # --- test-harness egress targets (TEST image only, never selectable) -------
 # ocs-test builds this image with these args so the image itself declares the
 # egress targets whose allow-rules it will test (baked by the entrypoint from
-# /etc/intranet-endpoints.txt and /etc/host-ports.txt into iptables):
+# /etc/intranet-endpoints.txt and /etc/host-ports.txt):
 #   HARNESS_EP_IP/HARNESS_EP_PORT  — the sandbox-net IP:port of the runner's
 #                                    intranet endpoint listener container.
 #   HARNESS_HOST_PORT              — the host-published port of the runner's
@@ -39,8 +43,9 @@ ARG HARNESS_HOST_PORT=8766
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # --- profile-specific apt (network analysis + jq) --------------------------
-# Already in ocs-base (do NOT re-declare): build-essential, curl,
-#   ca-certificates, git, xdg-utils, gosu, procps, squid, iptables, iproute2,
+# Network-analysis toolbox — NOT in the base (no jq in ocs-base/ocs-base-pi-minimal).
+# Already in the engine base (do NOT re-declare): build-essential, curl,
+#   ca-certificates, git, xdg-utils, gosu, procps, squid, iptables,
 #   iputils-ping, netcat-openbsd, dnsutils, whois.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -76,8 +81,8 @@ RUN chmod 0644 /opt/ocs/landlock.py
 # LAYER ORDER MATTERS: this RUN must come AFTER the COPYs of the two
 # allow-lists above (otherwise the COPY would overwrite the RUN's output
 # with the project's own files, and the baked harness EP / host port would
-# never make it into /etc, so no ACCEPT rule would be installed and the
-# positive egress cases 15/16 would fail).
+# never make it into /etc, so no ACCEPT rule would be installed and the positive
+# egress cases 15/16 would fail).
 RUN if [ -n "${HARNESS_EP_IP}" ]; then \
         echo "${HARNESS_EP_IP}:${HARNESS_EP_PORT}" >> /etc/intranet-endpoints.txt; \
     fi && \
@@ -98,12 +103,12 @@ RUN mkdir -p /mnt/ocs-fwd && chown "${USER_ID}:${GROUP_ID}" /mnt/ocs-fwd
 COPY listener.py /opt/ocs-test/listener.py
 RUN chmod 0644 /opt/ocs-test/listener.py
 
-# --- opencode password + entrypoint ------------------------------------------
-COPY opencode-password /opencode-password
+# --- entrypoint ----------------------------------------------------------------
+# NOTE: pi profile has NO /opencode-password block (pi is a separate engine
+# with no web server / basic-auth password). The entrypoint pi-guards that
+# block — it never reads /opencode-password for pi.
 COPY entrypoint.sh /entrypoint.sh
-RUN chown root:root /opencode-password \
-    && chmod 600 /opencode-password \
-    && chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 WORKDIR ${WORKSPACE_DIR}
 ENTRYPOINT ["/entrypoint.sh"]

@@ -28,7 +28,7 @@ source "${SCRIPT_DIR}/shared"
 # full container with nothing to say.
 if [[ -z "${1:-}" || "${1}" == "-h" || "${1}" == "--help" ]]; then
   cat <<'EOF'
-usage: ocs-run <prompt> [extra opencode-run args...]
+usage: ocs-run <prompt> [extra agent-command args...]
 
 <prompt> is either:
   - a path to a prompt file (read in place if inside the workspace,
@@ -36,8 +36,8 @@ usage: ocs-run <prompt> [extra opencode-run args...]
   - an inline prompt string (any other non-file argument) — written to
     a temp file and mounted read-only for this run
 
-Extra args are passed through to 'opencode run' (e.g. -f other.md,
---format json, --agent plan).
+Extra args are passed through to the agent command ('opencode run', or the
+pi CLI on pi-mini/pi-full projects; e.g. -f other.md, --format json).
 EOF
   [[ -z "${1:-}" ]] && exit 1
   exit 0
@@ -91,12 +91,25 @@ fi
 
 build_run_flags
 
+# Engine of this project — single source: the `dockerfile:` config key
+# (project_engine() in bin/shared). Docker labels do not survive `FROM`.
+PI_IMAGE=""
+if [[ "$(project_engine)" == "pi" ]]; then
+  PI_IMAGE="1"
+fi
+
 # Per-project overrides from policy.txt (written by ocs-rebuild-container).
-# MODEL:   use the project's `model:` key when set; otherwise the shared
-#          OPENCODE_MODEL constant in bin/shared.
+# MODEL:   opencode: the project's `model:` key when set; otherwise the shared
+#          OPENCODE_MODEL constant in bin/shared. pi: the `model:` key is
+#          opencode-only — the pin is the model id baked into the image's
+#          models.json (see README "Engine: pi-mini / pi-full").
 # TIMEOUT: wall-clock seconds; 0/empty => no limit.
 POLICY_MODEL="$(read_policy model 2>/dev/null || true)"
-MODEL="${POLICY_MODEL:-${OPENCODE_MODEL}}"
+if [[ -n "${PI_IMAGE:-}" ]]; then
+  MODEL="${OPENCODE_MODEL}"
+else
+  MODEL="${POLICY_MODEL:-${OPENCODE_MODEL}}"
+fi
 POLICY_TIMEOUT="$(read_policy timeout 2>/dev/null || true)"
 [[ "${POLICY_TIMEOUT}" =~ ^[0-9]+$ ]] || POLICY_TIMEOUT=0
 
@@ -121,9 +134,19 @@ fi
 # contains $(cmd) — is safe data, not executable code.)
 # shellcheck disable=SC2016
 SAFE_PATH="$(printf '%q' "${INNER_PATH}")"
-# --standalone (OpenCode 2): run with a private server instead of the shared
-# background service, so no opencode daemon outlives this one-shot container.
-OPCODE_CMD="exec opencode run --standalone -m '${MODEL}' \"\$(cat ${SAFE_PATH})\""
+
+if [[ -n "${PI_IMAGE}" ]]; then
+  # pi one-shot door: the pi CLI (baked at /opt/ocs/pi-agent, seeded into the
+  # workspace's persistent pi-agent dir by the entrypoint, exported as
+  # PI_CODING_AGENT_DIR). --provider ollama + --offline resolves the model from
+  # the baked models.json (intranet endpoint, no network). pi is local ollama
+  # only — no auth/login.
+  OPCODE_CMD="exec pi --provider ollama --model '${MODEL}' --print --no-approve --offline \"\$(cat ${SAFE_PATH})\" < /dev/null"
+else
+  # opencode one-shot door: pin the model and run with a private server so no
+  # opencode daemon outlives this one-shot container.
+  OPCODE_CMD="exec opencode run --standalone -m '${MODEL}' \"\$(cat ${SAFE_PATH})\""
+fi
 if [[ ${#} -gt 0 ]]; then
   ESCAPED_ARGS="$(printf '%q ' "$@")"
   OPCODE_CMD=" ${OPCODE_CMD} ${ESCAPED_ARGS}"
@@ -131,7 +154,11 @@ fi
 
 NAME="${CONTAINER_NAME}-run-$$"
 
-echo "Running one-shot opencode session (model: ${MODEL}) ..."
+if [[ -n "${PI_IMAGE:-}" ]]; then
+  echo "Running one-shot pi session (model: ${MODEL}) ..."
+else
+  echo "Running one-shot opencode session (model: ${MODEL}) ..."
+fi
 echo "   container: ${NAME}"
 if [[ -n "${INLINE_PROMPT_FILE}" ]]; then
   echo "   prompt:    (inline, ${#PROMPT_ARG} chars)"

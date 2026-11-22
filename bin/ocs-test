@@ -90,24 +90,40 @@ EP_IP="${SUBNET_BASE%.0}.254"
 # re-bake is invisible to image_is_current — it only checks ocs-test-api +
 # ocs-harness-ep — so a stale -test image built FROM the pre-2.3.2 base
 # would be silently reused).
-TEST_API="11"
-HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API}"
+# v12 re-bakes the test image on the per-project ENGINE base (Dockerfile.test's
+# ARG BASE_IMAGE — `ocs-base-pi-minimal` for pi projects, `ocs-base` otherwise,
+# so the suite detects the baked `pi`/`opencode` binary via `command -v`) and
+# rewrites the cases for the dual-engine contract; the ocs-base-image label
+# makes a project-engine-base switch catchable by the reuse check too.
+TEST_API="12"
+
+# The test image is FROM the project's own engine base (the rebuild script's
+# OCS_TEST_BASE_IMAGE dispatch): pi projects test on ocs-base-pi-minimal,
+# opencode projects on ocs-base.
+if [[ "$(project_engine)" == "pi" ]]; then
+  OCS_TEST_BASE_IMAGE="ocs-base-pi-minimal"
+else
+  OCS_TEST_BASE_IMAGE="ocs-base"
+fi
+HARNESS_ARGS="--build-arg HARNESS_EP_IP=${EP_IP} --build-arg HARNESS_EP_PORT=${HARNESS_EP_PORT} --build-arg HARNESS_HOST_PORT=${HARNESS_HOST_PORT} --label ocs-harness-ep=${EP_IP} --label ocs-test-api=${TEST_API} --label ocs-base-image=${OCS_TEST_BASE_IMAGE} --build-arg BASE_IMAGE=${OCS_TEST_BASE_IMAGE}"
 
 # Rebuild only when the cached image is missing or was built before the
-# current harness API (label ocs-test-api) or for a different harness
-# endpoint (label ocs-harness-ep). Bump TEST_API whenever the harness
-# mechanism changes so stale cached test images are rebuilt. A current
-# image is reused, keeping re-runs fast (cached-on-pass behaviour).
+# current harness API (label ocs-test-api), for a different harness endpoint
+# (label ocs-harness-ep), or from a different project engine base (label
+# ocs-base-image). Bump TEST_API whenever the harness mechanism changes so
+# stale cached test images are rebuilt. A current image is reused, keeping
+# re-runs fast (cached-on-pass behaviour).
 image_is_current() {
-  local ep api
+  local ep api base
   ep="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-harness-ep"}}' "${TEST_IMAGE}" 2>/dev/null)"
   api="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-test-api"}}' "${TEST_IMAGE}" 2>/dev/null)"
-  [[ "${ep}" == "${EP_IP}" && "${api}" == "${TEST_API}" ]]
+  base="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-image"}}' "${TEST_IMAGE}" 2>/dev/null)"
+  [[ "${ep}" == "${EP_IP}" && "${api}" == "${TEST_API}" && "${base}" == "${OCS_TEST_BASE_IMAGE}" ]]
 }
 
 if ! "${CONTAINER_RUNTIME}" image inspect "${TEST_IMAGE}" >/dev/null 2>&1 || ! image_is_current; then
-  echo "Building test image (Dockerfile.test, harness ep ${EP_IP}:${HARNESS_EP_PORT}) — this may take a moment ..."
-  if ! env OPENCODE_DOCKERFILE_OVERRIDE=test EXTRA_BUILD_ARGS="${HARNESS_ARGS}" "${SCRIPT_DIR}/ocs-rebuild-container"; then
+  echo "Building test image (Dockerfile.test on ${OCS_TEST_BASE_IMAGE}, harness ep ${EP_IP}:${HARNESS_EP_PORT}) — this may take a moment ..."
+  if ! env OPENCODE_DOCKERFILE_OVERRIDE=test OCS_TEST_BASE_IMAGE="${OCS_TEST_BASE_IMAGE}" EXTRA_BUILD_ARGS="${HARNESS_ARGS}" "${SCRIPT_DIR}/ocs-rebuild-container"; then
     echo "ERROR: failed to build test image '${TEST_IMAGE}'." >&2
     exit 1
   fi

@@ -249,18 +249,67 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# OpenCode credentials
+# OpenCode credentials — opencode door only.
+# The pi door (a separate engine with no web server / basic-auth password) has
+# no /opencode-password, so this block is skipped for it. The `: OPENCODE_PORT`
+# export below stays unconditional — harmless for pi.
 # ---------------------------------------------------------------------------
-OPENCODE_SERVER_PASSWORD=$(cat /opencode-password)
-export OPENCODE_SERVER_PASSWORD
-# OpenCode 2 auth is role-split: the SERVER reads OPENCODE_SERVER_PASSWORD
-# (above); a CLIENT that connects with --server presents its password via
-# OPENCODE_PASSWORD. Export both so in-container client commands (e.g. a
-# `ocs terminal` exec, or a TUI attached to this server) authenticate.
-OPENCODE_PASSWORD="${OPENCODE_SERVER_PASSWORD}"
-export OPENCODE_PASSWORD
+if [[ -f /opencode-password ]]; then
+  OPENCODE_SERVER_PASSWORD="$(cat /opencode-password)"
+  export OPENCODE_SERVER_PASSWORD
+  # OpenCode 2 auth is role-split: the SERVER reads OPENCODE_SERVER_PASSWORD
+  # (above); a CLIENT that connects with --server presents its password via
+  # OPENCODE_PASSWORD. Export both so in-container client commands (e.g. a
+  # `ocs terminal` exec, or a TUI attached to this server) authenticate.
+  OPENCODE_PASSWORD="${OPENCODE_SERVER_PASSWORD}"
+  export OPENCODE_PASSWORD
+fi
 : "${OPENCODE_PORT:=4096}"
 export OPENCODE_PORT
+
+# ---------------------------------------------------------------------------
+# pi-agent seeding (pi one-shot door).
+# The pi CLI + its managed tree (node_modules, models.json, settings.json) are
+# baked into the image at /opt/ocs/pi-agent (build time — the container has no
+# internet, so this is the only way to get pi's offline model resolution). Seed
+# them into the workspace's persistent pi-agent dir (the single rw dir) and
+# export PI_CODING_AGENT_DIR so the `pi` CLI resolves its settings/node_modules
+# from there. models.json points the ollama provider at the intranet endpoint;
+# pi is local ollama only — no auth/login. Skipped when /opt/ocs/pi-agent is
+# absent (the opencode minimal/full profiles never bake it), so opencode
+# projects stay clean.
+# ---------------------------------------------------------------------------
+if [[ -d /opt/ocs/pi-agent ]]; then
+  # Seed the pi-agent tree (models.json, settings.json, node_modules) into the
+  # workspace's persistent pi-agent dir (the single rw dir) — the container has
+  # no internet, so the baked image is the only source. First-run-only: if a
+  # dev-owned pi-agent already exists, skip it (the user owns the files after
+  # the first run — e.g. to edit pi-agent/lsp.json to add servers). A root-owned
+  # leftover (from a pre-fix entrypoint that seeded as root) is cleared and
+  # reseeded. Seeding runs AS dev (NOT root): the cap set has no CAP_CHOWN, so
+  # a root-side `cp -a` (preserve ownership) + `chown -R` fails EPERM; dev
+  # creates the tree dev-owned directly.
+  _pi_seed="${WORKSPACE_DIR}/pi-agent"
+  _pi_owner="$(stat -c %u "${_pi_seed}" 2>/dev/null || echo -1)"
+  if [[ "${_pi_owner}" != "$(id -u dev)" ]]; then
+    # Not seeded yet, or a root-owned leftover — clear and reseed. (root may
+    # rm a root-owned dir even without CAP_CHOWN; the workspace is a rw bind.)
+    rm -rf "${_pi_seed}"
+    # SC2016: single quotes are intentional — WORKSPACE_DIR expands in the dev
+    # user's shell, not root's.
+    # shellcheck disable=SC2016
+    gosu dev bash -c 'mkdir -p "$WORKSPACE_DIR/pi-agent" && cp -a /opt/ocs/pi-agent/. "$WORKSPACE_DIR/pi-agent/"'
+  fi
+  export PI_CODING_AGENT_DIR="${WORKSPACE_DIR}/pi-agent"
+  # pi-lsp (the built-in LSP extension) reads its global config from
+  # PI_AGENT_DIR (see _shared/config.ts: defaultAgentDir()) — without this
+  # it would look at $HOME/.pi/agent and find nothing in the container.
+  export PI_AGENT_DIR="${WORKSPACE_DIR}/pi-agent"
+  # Make the baked pi CLI (installed to <agent-dir>/bin by the global npm
+  # prefix) reachable on PATH for the pi door; harmless for the opencode door.
+  export PATH="${PI_CODING_AGENT_DIR}/bin:${PATH}"
+  echo ">> pi-agent seeded at ${PI_CODING_AGENT_DIR} (PI_CODING_AGENT_DIR exported for the pi door)"
+fi
 
 # ---------------------------------------------------------------------------
 # Start OpenCode as the dev user (gosu drops root, env is inherited).

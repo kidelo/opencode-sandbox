@@ -5,6 +5,10 @@
 *.env
 *.env.*
 
+# LSP plugin tarball (build artifact — fetched by `ocs rebuild` into config/,
+# not committed; see AGENTS.md "OpenCode LSP/Plugin").
+config/plugin.tar.gz
+
 # Sandbox projects (created by 'ocs init' under ./sandboxes/) are local and
 # ignored — new projects are not committed to the repo by default.
 sandboxes/*

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ocs-interactive — start a one-shot container and drop into the opencode
-# interactive terminal (TUI) as the 'dev' user. Squid + firewall are applied
-# first by the entrypoint, so the session is sandboxed exactly like the web one.
-# Ctrl+D (or /exit) in opencode ends the session; the container is removed.
+# ocs-interactive — start a one-shot container and drop into the interactive
+# terminal as the 'dev' user: the project's engine — the opencode TUI for
+# opencode projects, or the pi session (bare `pi`, model pinned via the baked
+# models.json) for pi-mini/pi-full projects. Squid + firewall are applied
+# first by the entrypoint, so the session is sandboxed exactly like the web
+# one. Ctrl+D (or /exit) ends the session; the container is removed.
 #
 # The last session is preserved (it lives in the persistent opencode state
 # tree, mounted at /home/dev/.local/share/opencode), so an aborted TUI can be
@@ -38,7 +40,9 @@ usage() {
   cat <<'EOF'
 usage: ocs tui [name] [resume-flags] [mode]
 
-Runs the opencode interactive TUI (sandboxed).
+Runs the project's interactive terminal (sandboxed): the opencode TUI for
+opencode projects, or the pi session (pi-mini/pi-full) — pi has no -c/-s
+resume, so resume flags are rejected on pi projects.
 
 Resume options (passed to 'opencode', start modes only):
   -c, --continue        continue the last session (e.g. after an abort)
@@ -108,34 +112,65 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+# Engine of this project — single source: the `dockerfile:` config key
+# (project_engine() in bin/shared). Docker labels do not survive `FROM`, so
+# the working images carry none.
+PI_IMAGE=""
+if [[ "$(project_engine)" == "pi" ]]; then
+  PI_IMAGE="1"
+fi
+
 # Per-project overrides from policy.txt (written by ocs-rebuild-container).
-# MODEL:  use the project's `model:` key when set; otherwise the shared
-#         OPENCODE_MODEL constant in bin/shared (kept as the fallback). NOTE:
-#         in OpenCode 2 the full TUI takes no --model flag — this value is
-#         for the banner and must match the `model` pin in the mounted
-#         config/opencode.jsonc (AGENTS.md keeps them in sync).
+# MODEL:  opencode: the project's `model:` key when set; otherwise the shared
+#         OPENCODE_MODEL constant in bin/shared (kept as the fallback). pi:
+#         the `model:` key is opencode-only — the pin is the model id baked
+#         into the image's models.json (see README "Engine: pi-mini / pi-full").
+# NOTE (opencode): in OpenCode 2 the full TUI takes no --model flag — this
+# value is for the banner and must match the `model` pin in the mounted
+# config/opencode.jsonc (AGENTS.md keeps them in sync).
 # TIMEOUT: wall-clock seconds; 0/empty => no limit.
 POLICY_MODEL="$(read_policy model 2>/dev/null || true)"
-MODEL="${POLICY_MODEL:-${OPENCODE_MODEL}}"
+if [[ -n "${PI_IMAGE:-}" ]]; then
+  MODEL="${OPENCODE_MODEL}"
+else
+  MODEL="${POLICY_MODEL:-${OPENCODE_MODEL}}"
+fi
 POLICY_TIMEOUT="$(read_policy timeout 2>/dev/null || true)"
 [[ "${POLICY_TIMEOUT}" =~ ^[0-9]+$ ]] || POLICY_TIMEOUT=0
 
-# Build the command the entrypoint evals as 'dev'. Bare 'opencode' (no
-# subcommand) is the OpenCode 2 full-screen TUI; its CLI flag set is
-# --standalone/--server/--auto/--continue/--session/--prompt — NO --model and
-# NO --fork (those exist only on the `mini` and `run` subcommands). The model
-# is therefore pinned by the read-only opencode.jsonc mounted at
-# /etc/opencode/opencode.jsonc (`model` + the `enabled_providers` filter),
-# which the TUI honors. `ocs run` still pins explicitly with `-m` (opencode
-# run DOES have --model).
+# The pi engine has no -c/-s session resume — a pi session is a fresh process,
+# so reject resume flags on pi projects up front (usage error, like the other
+# flag conflicts).
+if [[ -n "${PI_IMAGE:-}" && ( ${TUI_CONT} -eq 1 || -n "${TUI_SES:-}" ) ]]; then
+  echo "ocs tui: the pi engine has no -c/-s resume — start a fresh session instead." >&2
+  usage >&2
+  exit 2
+fi
+
+# Build the command the entrypoint evals as 'dev'. Opencode projects: bare
+# 'opencode' (no subcommand) is the OpenCode 2 full-screen TUI; its CLI flag
+# set is --standalone/--server/--auto/--continue/--session/--prompt — NO
+# --model and NO --fork (those exist only on the `mini` and `run`
+# subcommands). The model is therefore pinned by the read-only opencode.jsonc
+# mounted at /etc/opencode/opencode.jsonc (`model` + the `enabled_providers`
+# filter), which the TUI honors. `ocs run` still pins explicitly with `-m`
+# (opencode run DOES have --model).
 # --standalone (OpenCode 2) keeps the server private to this container:
 # without it the client auto-starts a shared background service that would
 # outlive the TUI and the one-shot container.
 # The resume flags are appended as separate tokens, the session id shell-quoted
 # so it survives the entrypoint's eval (same printf-%q discipline as ocs-run).
-OC_TUI="opencode --standalone"
-[[ ${TUI_CONT} -eq 1 ]] && OC_TUI="${OC_TUI} --continue"
-[[ -n "${TUI_SES}" ]] && OC_TUI="${OC_TUI} --session $(printf '%q' "${TUI_SES}")"
+if [[ -n "${PI_IMAGE:-}" ]]; then
+  # pi engine (pi-mini/pi-full): the pi interactive session — the engine's
+  # equivalent of the opencode TUI. The model is pinned via the baked
+  # models.json; pi runs with --provider ollama + the pinned id (no free
+  # catalog; --offline so no startup network operations).
+  OC_TUI="pi --provider ollama --model '${MODEL}' --offline"
+else
+  OC_TUI="opencode --standalone"
+  [[ ${TUI_CONT} -eq 1 ]] && OC_TUI="${OC_TUI} --continue"
+  [[ -n "${TUI_SES}" ]] && OC_TUI="${OC_TUI} --session $(printf '%q' "${TUI_SES}")"
+fi
 
 # Human summary of the resume state (startup banner).
 TUI_RESUME_DESC="fresh session (no resume flag)"
@@ -366,7 +401,11 @@ if [[ "${MODE}" == "detach" ]]; then
   else
     echo "Starting detached TUI session (long-lived container ${DETACH_NAME}) ..."
     echo "   type:      detached TUI in tmux — leave with Ctrl-B D, the agent keeps working"
-    echo "   model:     ${MODEL} (pinned in config/opencode.jsonc — the V2 TUI has no --model flag)"
+    if [[ -n "${PI_IMAGE:-}" ]]; then
+      echo "   model:     ${MODEL} (pinned via the baked models.json — the pi engine)"
+    else
+      echo "   model:     ${MODEL} (pinned in config/opencode.jsonc — the V2 TUI has no --model flag)"
+    fi
     echo "   resume:    ${TUI_RESUME_DESC}"
     for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done
     echo "---"
@@ -397,7 +436,7 @@ fi
 OPCODE_CMD="${OC_TUI}"
 
 if ! tty -s 2>/dev/null; then
-  echo "ocs-interactive needs a TTY (it starts the opencode TUI)." >&2
+  echo "ocs-interactive needs a TTY (it starts the interactive terminal — the opencode TUI, or the pi session for pi projects)." >&2
   echo "Attach to a running web session with: ${SANDBOX_HOME}/bin/ocs-terminal" >&2
   exit 1
 fi
@@ -407,12 +446,18 @@ build_run_flags
 # Distinct name so a concurrent ocs-start-container (web) can keep running.
 NAME="${CONTAINER_NAME}-tui-$$"
 
-echo "Starting interactive opencode session ..."
-echo "   container: ${NAME}"
-echo "   type:      interactive TUI (no web server)"
-echo "   model:     ${MODEL} (pinned in config/opencode.jsonc — the V2 TUI has no --model flag)"
-echo "   resume:    ${TUI_RESUME_DESC}"
-if [[ "${POLICY_TIMEOUT}" -gt 0 ]]; then echo "   timeout:   ${POLICY_TIMEOUT}s"; fi
+if [[ -n "${PI_IMAGE:-}" ]]; then
+  echo "Starting interactive pi session ..."
+  echo "   container: ${NAME}"
+  echo "   type:      interactive pi session (the pi engine; no web server)"
+  echo "   model:     ${MODEL} (pinned via the baked models.json)"
+else
+  echo "Starting interactive opencode session ..."
+  echo "   container: ${NAME}"
+  echo "   type:      interactive TUI (no web server)"
+  echo "   model:     ${MODEL} (pinned in config/opencode.jsonc — the V2 TUI has no --model flag)"
+  echo "   resume:    ${TUI_RESUME_DESC}"
+fi
 for entry in "${RUN_LOG[@]}"; do echo "${entry}"; done
 echo "---"
 echo ""

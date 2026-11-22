@@ -1,15 +1,15 @@
 {
   "$schema": "https://opencode.ai/config.json",
   // Always run the sandbox model (CLI paths also pin it via -m)
-  "model": "ollama/qwen3.8:27b",
+  "model": "ollama/ornith-1.5:9b",
 
   // Sandboxes are ephemeral one-shot containers — no auto-update (the
   // sandbox firewall would deny the update egress anyway).
   "update": "disable",
 
   // OpenCode 2.3.2: keep a share of the model's context window free for
-  // compaction (percentage form — one value fits the 196k-token Qwen window
-  // and any future model). Longer agent runs survive near-full context.
+  // compaction (percentage form — one value fits the 128k-token window and
+  // any future model). Longer agent runs survive near-full context.
   "compaction": {
     "buffer": "20%"
   },
@@ -17,7 +17,7 @@
   // V2: the V1 `small_model` key becomes the built-in `title` agent's model.
   "agents": {
     "title": {
-      "model": "ollama/qwen3.8:27b"
+      "model": "ollama/ornith-1.5:9b"
     }
   },
 
@@ -50,11 +50,11 @@
         "chunkTimeout": 600000
       },
       "models": {
-        "qwen3.8:27b": {
-          "name": "Qwen3.8 27B",
+        "ornith-1.5:9b": {
+          "name": "Ornith 1.5 9B",
           "limit": {
-            "context": 196608,
-            "output": 32768
+            "context": 131072,
+            "output": 16384
           }
         }
       }
