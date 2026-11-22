@@ -6,8 +6,10 @@
 # `pi-mini` profile build, so the expensive parts that are common to the pi
 # one-shot door (the Debian base + the common sandbox-harness apt set + the
 # dev user + dirs + git-hook neutralization + the xdg-open stub + the baked
-# Node.js toolchain + the pi-agent managed tree + models.json) are installed
-# ONCE per host and reused by every pi-mini-profile project.
+# Node.js toolchain + the pi-agent managed tree) are installed ONCE per host
+# and reused by every pi-mini-profile project. (models.json is NOT baked here
+# — it is per-project, written by the pi-mini/pi-full tails from the
+# `pi-base-url:` build arg so the base stays host-shared.)
 #
 # Deliberately INDEPENDENT of ocs-base / ocs-base-full: pi is a separate engine
 # (the pi CLI, not opencode) and needs NO opencode CLI. So this base starts
@@ -107,10 +109,10 @@ RUN printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-open \
 # --- Node.js + npm prebuilt (lean pi base only) -----------------------------
 # pi's engine needs Node.js (>=22.19.0, the bundled `engines.node`). python:3.13
 # ships no Node, so install a prebuilt Node + its bundled npm ONCE per host
-# here. The official linux-x64 tarball is a musl build that runs fine on the
-# glibc host (it resolves glibc libs at runtime); the glibc-specific
-# "linux-x64-glibc.tar.gz" variant 404s. The binary bundles npm/npx (no
-# separate npm install). NOTE: this is a prebuilt, not a source build.
+# here. The official "linux-x64" tarball is the plain glibc build (the musl
+# variants are separate `-musl` files; a "linux-x64-glibc.tar.gz" URL 404s).
+# The binary bundles npm/npx (no separate npm install). NOTE: this is a
+# prebuilt, not a source build.
 ARG NODE_VERSION="v24.22.3"
 RUN set -e ; \
     NODE_DIST="node-${NODE_VERSION}-linux-x64.tar.gz" ; \
@@ -120,75 +122,45 @@ RUN set -e ; \
     && chmod +x /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx \
     && rm -rf /var/cache/apt/archives/*
 
-# --- pi-agent managed tree + models.json (baked, pinned) --------------------
+# --- pi-agent managed tree (baked, pinned; models.json is per-project) -----
 # `npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.4.0`
 # installs the pi CLI to the explicit global prefix (the `--prefix` flag, NOT
 # the NPM_PREFIX env which npm 11 ignores). Then the managed recipe bakes the
-# extra plugin (pi-subagents) + writes models.json pointing the ollama provider
-# at the intranet endpoint, both REQUIRED for offline use (the container has no
-# internet — models.json is what resolves the model without a network fetch).
-#
-# The template dir must exist BEFORE the global npm install so the managed
-# recipe (which writes into it) has a place to write; it is COPY'd into the
-# image by the pi-mini/pi-full profiles and baked at the right uid.
+# extra plugin (pi-subagents) — REQUIRED for offline use (the container has no
+# internet). models.json (which points the ollama provider at the project's
+# intranet endpoint) is baked by the pi-mini/pi-full tails from the
+# PI_BASE_URL build arg, so the base stays host-shared.
 ARG PI_CODING_AGENT_DIR="/opt/ocs/pi-agent"
-ARG PI_BASE_URL="http://192.168.0.139:11434/v1"
 RUN set -e ; \
     mkdir -p "${PI_CODING_AGENT_DIR}" \
     && npm install -g --ignore-scripts --prefix "${PI_CODING_AGENT_DIR}" @earendil-works/pi-coding-agent@1.4.0 \
     && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-subagents@0.89.2 \
-    && printf '%s\n' '{' \
-        '  "providers": {' \
-        '    "ollama": {' \
-        '      "api": "openai-completions", ' \
-        '      "baseUrl": "'"${PI_BASE_URL}"'", ' \
-        '      "apiKey": "ollama", ' \
-        '      "models": [' \
-        '        { "id": "ornith-1.5:9b", "name": "Ornith 1.5 9B", "contextWindow": 131072, "maxTokens": 16384 }' \
-        '      ]' \
-        '    }' \
-        '  }' \
-        '}' > "${PI_CODING_AGENT_DIR}/models.json" \
     && chown -R "${USER_ID}:${GROUP_ID}" "${PI_CODING_AGENT_DIR}"
 
-# --- pi-lsp extension (built-in LSP plugin for the pi engine) ----------------
-# pi-lsp (npm:pi-lsp, github.com/Conte777/pi-lsp — "Declarative Pi extension
-# for LSP diagnostics and language-server navigation tools") is baked in by
-# default: pi-lsp registers LLM tools (lsp_diagnostics, lsp_hover,
-# lsp_definition, lsp_references, lsp_symbols) and appends diagnostics to
-# write/edit results. The PYRIGHT server (the reference language server of
-# the pi-full base — pip package pyright 1.1.414, and here via the npm
-# package because the lean pi base has no pip stack) is pre-configured in the
-# baked lsp.json below (the GLOBAL config pi-lsp reads — auto-trusted;
-# `pi-lsp` config is resolved via PI_AGENT_DIR, which the entrypoint exports
-# for the runtime agent dir). In the pi-full chain pyright-langserver is
-# already on PATH (see base-pi.Dockerfile) — the `command -v` guard makes
-# this RUN a no-op there.
+# --- pi-lens + pi-memory extensions (built-in LSP + memory plugins) ---------
+# pi-lens (npm:pi-lens, apmantza/pi-lens) is baked in by default: it registers
+# LLM tools (lsp_diagnostics, lsp_hover, lsp_definition, lsp_references,
+# lsp_symbols) and appends diagnostics to write/edit results. It zero-config
+# auto-detects the language server (no lsp.json needed — pi-lens reads its own
+# global config from ~/.pi-lens/config.json). The PYRIGHT server (the reference
+# language server — pip package in the pi-full chain, npm package here because
+# the lean pi base has no pip stack) is baked the same way: in the pi-full
+# chain pyright-langserver is already on PATH (see base-pi.Dockerfile) — the
+# `command -v` guard makes this npm install a no-op there; in the lean base the
+# npm package provides it. Note: pi-lens's runtime auto-installs
+# (biome/prettier/yamllint, GitHub-release binaries) need internet — the
+# container has none at runtime, so they fail gracefully; the core LSP path
+# works offline.
+# pi-memory (npm:pi-memory) is the memory extension (the agent's persistent
+# memory; core tools, no qmd semantic-search backend is baked — the container
+# has no internet for it).
 RUN set -e ; \
     command -v pyright-langserver || npm install -g --ignore-scripts pyright@1.1.414 \
     && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
-        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-lsp@0.1.8 \
-    && printf '%s\n' \
-        '{' \
-        '  "version": 1,' \
-        '  "servers": [' \
-        '    {' \
-        '      "id": "pyright",' \
-        '      "enabled": true,' \
-        '      "include": ["**/*.py", "**/*.pyi"],' \
-        '      "rootMarkers": ["pyproject.toml", "setup.py", "requirements.txt", "Pipfile", "poetry.lock"],' \
-        '      "bin": "pyright-langserver",' \
-        '      "args": ["--stdio"],' \
-        '      "cwd": "{root}",' \
-        '      "languageIdByExtension": { ".py": "python", ".pyi": "python" },' \
-        '      "startupTimeoutMs": 45000,' \
-        '      "diagnosticsWaitMs": 2000,' \
-        '      "initializationOptions": {},' \
-        '      "settings": {}' \
-        '    }' \
-        '  ]' \
-        '}' > "${PI_CODING_AGENT_DIR}/lsp.json" \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-lens@4.5.1 \
+    && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-memory@0.4.2 \
     && chown -R "${USER_ID}:${GROUP_ID}" "${PI_CODING_AGENT_DIR}"
 
 # --- base reuse labels --------------------------------------------------------

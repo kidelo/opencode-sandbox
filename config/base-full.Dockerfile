@@ -342,6 +342,6 @@ RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel \
                 fi \
             && tar -xzf /opt/ocs/opencode-v2-lsp-support.tar.gz -C /opt/ocs \
             && rm /opt/ocs/opencode-v2-lsp-support.tar.gz \
-            && chmod a+rwx /opt/ocs/opencode-v2-lsp-support/index.ts \
-            && chmod a+rwx /opt/ocs/opencode-v2-lsp-support/src/*.ts \
-            && chmod a+rwx /opt/ocs/opencode-v2-lsp-support/*.ts
+            && chmod a+r /opt/ocs/opencode-v2-lsp-support/index.ts \
+            && chmod a+r /opt/ocs/opencode-v2-lsp-support/src/*.ts \
+            && chmod a+r /opt/ocs/opencode-v2-lsp-support/*.ts

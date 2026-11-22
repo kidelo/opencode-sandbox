@@ -95,7 +95,11 @@ EP_IP="${SUBNET_BASE%.0}.254"
 # so the suite detects the baked `pi`/`opencode` binary via `command -v`) and
 # rewrites the cases for the dual-engine contract; the ocs-base-image label
 # makes a project-engine-base switch catchable by the reuse check too.
-TEST_API="12"
+# v13 bakes the per-project models.json into the test image (Dockerfile.test's
+# conditional PI_BASE_URL bake — pi projects only; the rebuild tail passes the
+# `pi-base-url:` URL as --build-arg, opencode projects pass an empty value and
+# the RUN is a no-op). Cases 08/30 still see the pinned model resolve offline.
+TEST_API="13"
 
 # The test image is FROM the project's own engine base (the rebuild script's
 # OCS_TEST_BASE_IMAGE dispatch): pi projects test on ocs-base-pi-minimal,

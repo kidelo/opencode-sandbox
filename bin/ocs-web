@@ -9,6 +9,12 @@ source "${SCRIPT_DIR}/shared"
 use_sandbox_root
 print_sandbox_dir
 
+if [[ "$(project_engine)" == "pi" ]]; then
+  echo "ocs web: not supported on pi projects (pi-mini/pi-full)." >&2
+  echo "ocs web: pi projects run the pi engine directly — use 'ocs run' for a pi one-shot." >&2
+  exit 1
+fi
+
 if [[ ! -f "${OPENCODE_PASSWORD_FILE}" ]]; then
   echo "Missing sandbox build artifacts in ${OPENCODE_SANDBOX_DIR}."
   echo "Run ocs rebuild first."

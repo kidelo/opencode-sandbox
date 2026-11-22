@@ -5,12 +5,13 @@
 # (base-pi.Dockerfile, created by `ocs rebuild` before this file is built).
 # That base already carries: the Debian base + the common sandbox-harness apt
 # set + the `dev` user + dirs + the git-hook neutralization + the xdg-open
-# stub + the prebuilt Node.js toolchain + the baked pi-agent managed tree +
-# models.json (so `pi --print --offline` resolves the model with no internet)
-# PLUS the full dev toolchain (shellcheck, CSV/OCR/PDF/graphviz/fonts/…) and
-# the large pip data/office/PDF/OCR/sci stack + the community LSP plugin (all
-# inherited from `ocs-base-full`) and any pi-plugins: entries (baked at build
-# time by the block below).
+# stub + the prebuilt Node.js toolchain + the baked pi-agent managed tree
+# (pi CLI + pi-subagents + pi-lens + pi-memory; so `pi --print --offline`
+# resolves the model with no internet) PLUS the full dev toolchain
+# (shellcheck, CSV/OCR/PDF/graphviz/fonts/…) and the large pip data/office/
+# PDF/OCR/sci stack + any pi-plugins: entries (baked at build time by the
+# block below). (models.json is per-project, baked from the PI_BASE_URL build
+# arg — see the block below.)
 #
 # This profile adds ONLY the PER-PROJECT configuration variables: the squid
 # whitelist/config, host-ports, intranet-endpoints, agent-dns, landlock helper,
@@ -26,6 +27,42 @@
 # ==========================================================================
 
 FROM ocs-base-pi
+
+# USER_ID/GROUP_ID: the dev user already exists in the base. The base's ARGs
+# don't survive FROM, so re-declare them here to chown models.json below. The
+# tail build (bin/ocs-rebuild-container) already passes them as build args.
+# PI_BASE_URL: the models.json baseUrl — REQUIRED, validated by `ocs rebuild`
+# (required for pi projects; the URL's host:port must be in the project's
+# intranet-endpoints:). The container has no runtime internet, so models.json
+# is the only way for the pi engine to resolve the model.
+ARG USER_ID
+ARG GROUP_ID
+ARG PI_BASE_URL=""
+
+# --- models.json (per-project, from the `pi-base-url:` config key) ------------
+# Written to the pi-agent directory baked into the base (the same path where
+# the pi-plugins block installs into). Baked owned by dev; the entrypoint
+# seeds this tree into the workspace's persistent pi-agent directory.
+RUN set -e ; \
+    if [ -z "${PI_BASE_URL}" ]; then \
+        echo "ERROR: PI_BASE_URL build argument is empty — set 'pi-base-url:' in the project config." >&2 ; \
+        exit 1 ; \
+    fi ; \
+    printf '%s\n' \
+        '{' \
+        '  "providers": {' \
+        '    "ollama": {' \
+        '      "api": "openai-completions", ' \
+        '      "baseUrl": "'"${PI_BASE_URL}"'", ' \
+        '      "apiKey": "ollama", ' \
+        '      "models": [' \
+        '        { "id": "ornith-1.5:9b", "name": "Ornith 1.5 9B", "contextWindow": 131072, "maxTokens": 16384 }' \
+        '      ]' \
+        '    }' \
+        '  }' \
+        '}' > /opt/ocs/pi-agent/models.json \
+    && chown "${USER_ID}:${GROUP_ID}" /opt/ocs/pi-agent/models.json \
+    && chmod 0644 /opt/ocs/pi-agent/models.json
 
 # --- squid proxy configuration ----------------------------------------------
 COPY squid.conf /etc/squid/squid.conf
@@ -46,7 +83,8 @@ RUN chmod 0644 /opt/ocs/landlock.py
 # pi-plugins.txt (space-separated `npm:<spec>` sources, validated by
 # `ocs rebuild`) is baked here: extra plugins must already be in the image —
 # the container has no runtime internet (pi itself runs `--print --offline`).
-# (pi-subagents@0.89.2 is in both pi bases already.)
+# (pi-subagents@0.89.2 is in both pi bases already; pi-lens@4.5.1 and
+# pi-memory@0.4.2 are in the bases too.)
 COPY pi-plugins.txt /tmp/pi-plugins.txt
 RUN set -e ; \
     for p in $(cat /tmp/pi-plugins.txt); do \

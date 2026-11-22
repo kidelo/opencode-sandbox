@@ -12,10 +12,10 @@
 # `command -v opencode`).
 # The base already has the Debian base, the common apt set (the sandbox
 # harness: squid/iptables/gosu/iproute2/iputils-ping/netcat-openbsd/dnsutils/
-# whois) — plus the engine bake: the pi-agent managed tree + models.json for
-# the pi bases (so `pi --print --offline` resolves the model with no internet)
-# or the opencode CLI for the `ocs-base` default. This profile adds ONLY what
-# the network-analysis suite needs beyond that base: the network-analysis
+# whois) — plus the engine bake: the pi-agent managed tree (pi-lens +
+# pi-memory, no models.json — per-project now) for the pi bases, or the
+# opencode CLI for the `ocs-base` default. This profile adds ONLY what the
+# network-analysis suite needs beyond that base: the network-analysis
 # toolbox + `jq` + the reserved harness egress args + the listener.
 # ==========================================================================
 
@@ -24,9 +24,14 @@ FROM ${BASE_IMAGE}
 
 # USER_ID / GROUP_ID: the base image already baked in the dev user with these
 # IDs (both engine bases are built with the same `--build-arg USER_ID/
-# GROUP_ID`), so the profile build needs them only to `chown /mnt/ocs-fwd` below.
+# GROUP_ID`), so the profile build needs them only to `chown /mnt/ocs-fwd`
+# below and to `chown models.json` in the pi bake below.
 ARG USER_ID
 ARG GROUP_ID
+# PI_BASE_URL: the per-project models.json baseUrl — set by the tail build for
+# pi projects (see the bake after the harness RUN). Empty for opencode
+# projects (and for pi projects where validation is bypassed).
+ARG PI_BASE_URL=""
 # --- test-harness egress targets (TEST image only, never selectable) -------
 # ocs-test builds this image with these args so the image itself declares the
 # egress targets whose allow-rules it will test (baked by the entrypoint from
@@ -88,6 +93,29 @@ RUN if [ -n "${HARNESS_EP_IP}" ]; then \
     fi && \
     if [ -n "${HARNESS_HOST_PORT}" ]; then \
         echo "${HARNESS_HOST_PORT}" >> /etc/host-ports.txt; \
+    fi
+
+# --- per-project models.json (PI_BASE_URL build arg; pi projects only) --------
+# The pi bases no longer bake models.json (per-project now), so the test image
+# bakes it here when the tail build passes --build-arg PI_BASE_URL (pi projects
+# only — opencode projects pass an empty value and this RUN is a no-op). This
+# lets cases 08/30 see the pinned model resolve offline.
+RUN if [ -n "${PI_BASE_URL}" ]; then \
+        printf '%s\n' \
+            '{' \
+            '  "providers": {' \
+            '    "ollama": {' \
+            '      "api": "openai-completions", ' \
+            '      "baseUrl": "'"${PI_BASE_URL}"'", ' \
+            '      "apiKey": "ollama", ' \
+            '      "models": [' \
+            '        { "id": "ornith-1.5:9b", "name": "Ornith 1.5 9B", "contextWindow": 131072, "maxTokens": 16384 }' \
+            '      ]' \
+            '    }' \
+            '  }' \
+            '}' > /opt/ocs/pi-agent/models.json \
+            && chown "${USER_ID}:${GROUP_ID}" /opt/ocs/pi-agent/models.json \
+            && chmod 0644 /opt/ocs/pi-agent/models.json ; \
     fi
 # Landing dir for the volume-mount test case (case 14). NOTE: this dir
 # existing/writable in the image alone is NOT proof of the -v mount —

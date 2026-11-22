@@ -9,6 +9,15 @@ source "${SCRIPT_DIR}/shared"
 use_sandbox_root
 print_sandbox_dir
 
+# pi guard: `ocs start` launches the opencode web server, which pi has no
+# server for. Reject up front (usage error, before the pre-start hook) with a
+# clear message — no container is started.
+if [[ "$(project_engine)" == "pi" ]]; then
+  echo "ocs start: not supported on pi projects (pi-mini/pi-full)." >&2
+  echo "ocs start: pi projects run the pi engine directly — use 'ocs run' for a pi one-shot." >&2
+  exit 1
+fi
+
 # Source pre-start hook if present (runs on host, may export env vars)
 HOOK_PRE_START="${ROOT_DIR}/opencode-sandbox-pre-start-container.sh"
 if [[ -f "${HOOK_PRE_START}" ]]; then

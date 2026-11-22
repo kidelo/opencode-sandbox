@@ -301,9 +301,9 @@ if [[ -d /opt/ocs/pi-agent ]]; then
     gosu dev bash -c 'mkdir -p "$WORKSPACE_DIR/pi-agent" && cp -a /opt/ocs/pi-agent/. "$WORKSPACE_DIR/pi-agent/"'
   fi
   export PI_CODING_AGENT_DIR="${WORKSPACE_DIR}/pi-agent"
-  # pi-lsp (the built-in LSP extension) reads its global config from
-  # PI_AGENT_DIR (see _shared/config.ts: defaultAgentDir()) — without this
-  # it would look at $HOME/.pi/agent and find nothing in the container.
+  # pi-lens (the built-in LSP + memory extension) auto-detects the language
+  # server with zero config (its own global config lives in ~/.pi-lens/); it
+  # does NOT read PI_AGENT_DIR for an lsp.json — the export is harmless.
   export PI_AGENT_DIR="${WORKSPACE_DIR}/pi-agent"
   # Make the baked pi CLI (installed to <agent-dir>/bin by the global npm
   # prefix) reachable on PATH for the pi door; harmless for the opencode door.

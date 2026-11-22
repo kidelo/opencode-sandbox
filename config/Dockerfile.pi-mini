@@ -6,12 +6,12 @@
 # built). That base already carries: the Debian base + the common sandbox-
 # harness apt set (squid/iptables/gosu/…) + the `dev` user + dirs + the git-
 # hook neutralization + the xdg-open stub + the prebuilt Node.js toolchain +
-# the baked pi-agent managed tree + models.json (so `pi --print --offline`
-# resolves the model with no internet).
+# the baked pi-agent managed tree (pi CLI + pi-subagents + pi-lens +
+# pi-memory) (so `pi --print --offline` resolves the model with no internet).
 #
 # This profile adds ONLY the PER-PROJECT configuration variables: the squid
 # whitelist/config, host-ports, intranet-endpoints, agent-dns, landlock helper,
-# and the entrypoint.
+# the models.json (from the PI_BASE_URL build arg), and the entrypoint.
 #
 # NOTE: unlike the opencode profiles, there is NO /opencode-password block —
 # pi is a separate engine with no web server / basic-auth password. The
@@ -23,11 +23,46 @@
 
 # FROM ocs-base-pi-minimal — the precompiled lean pi base already carries the
 # Debian base, the common apt set (the sandbox harness), the prebuilt Node.js
-# + npm toolchain, the baked pi-agent managed tree + models.json, the `dev`
-# user + dirs, and the git-hook neutralization + xdg-open stub (plus any
-# pi-plugins: entries, baked at build time by the block below). Nothing else
-# is re-declared here.
+# + npm toolchain, the baked pi-agent managed tree, the `dev` user + dirs, and
+# the git-hook neutralization + xdg-open stub (plus any pi-plugins: entries,
+# baked at build time by the block below). Nothing else is re-declared here.
 FROM ocs-base-pi-minimal
+
+# USER_ID/GROUP_ID: the dev user already exists in the base; the base ARGs
+# do not survive FROM, so re-declare them here to `chown` models.json below.
+# The tail build (bin/ocs-rebuild-container) already passes them as build
+# args. PI_BASE_URL: the models.json baseUrl — REQUIRED, validated by
+# `ocs rebuild` (required for pi projects; the URL's host:port must be in the
+# project's intranet-endpoints:). The container has no runtime internet, so
+# models.json is the only way the pi engine resolves the model.
+ARG USER_ID
+ARG GROUP_ID
+ARG PI_BASE_URL=""
+
+# --- models.json (per-project, from the `pi-base-url:` config key) ------------
+# Written into the base's baked pi-agent dir (the same path the pi-plugins
+# block below installs into). Baked dev-owned; the entrypoint seeds this tree
+# into the workspace's persistent pi-agent dir.
+RUN set -e ; \
+    if [ -z "${PI_BASE_URL}" ]; then \
+        echo "ERROR: PI_BASE_URL build arg is empty — set 'pi-base-url:' in the project config." >&2 ; \
+        exit 1 ; \
+    fi ; \
+    printf '%s\n' \
+        '{' \
+        '  "providers": {' \
+        '    "ollama": {' \
+        '      "api": "openai-completions", ' \
+        '      "baseUrl": "'"${PI_BASE_URL}"'", ' \
+        '      "apiKey": "ollama", ' \
+        '      "models": [' \
+        '        { "id": "ornith-1.5:9b", "name": "Ornith 1.5 9B", "contextWindow": 131072, "maxTokens": 16384 }' \
+        '      ]' \
+        '    }' \
+        '  }' \
+        '}' > /opt/ocs/pi-agent/models.json \
+    && chown "${USER_ID}:${GROUP_ID}" /opt/ocs/pi-agent/models.json \
+    && chmod 0644 /opt/ocs/pi-agent/models.json
 
 # --- squid proxy configuration ----------------------------------------------
 COPY squid.conf /etc/squid/squid.conf

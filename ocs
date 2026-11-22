@@ -276,7 +276,13 @@ case "${cmd}" in
     [[ $# -gt 0 ]] && shift
     if valid_sandbox_name "${plan_first}" && [[ -f "${SANDBOXES_BASE}/${plan_first}/config/opencode-sandbox-config.yaml" ]]; then
       cd "${SANDBOXES_BASE}/${plan_first}"
-      exec "${BIN_DIR}/ocs-run" "$@" --agent plan
+      if ! grep -qE '^dockerfile:[[:space:]]*(pi-mini|pi-full)' "${SANDBOXES_BASE}/${plan_first}/config/opencode-sandbox-config.yaml" 2>/dev/null; then
+        exec "${BIN_DIR}/ocs-run" "$@" --agent plan
+      else
+        echo "ocs: 'ocs plan' is not supported on pi projects (pi-mini/pi-full)." >&2
+        echo "ocs: pi projects run the pi engine directly — use 'ocs run' for a pi one-shot." >&2
+        exit 1
+      fi
     fi
     # Near-miss guard (mirrors `run`): a name-shaped first arg with no such
     # project but a close one is a typo, not an inline prompt — fail fast.
@@ -291,7 +297,13 @@ case "${cmd}" in
     plan_dir="$(find_sandbox_root 2>/dev/null || true)"
     if [[ -n "${plan_dir}" && -d "${plan_dir}" ]]; then
       cd "${plan_dir}"
-      exec "${BIN_DIR}/ocs-run" "${plan_first}" "$@" --agent plan
+      if ! grep -qE '^dockerfile:[[:space:]]*(pi-mini|pi-full)' "${plan_dir}/config/opencode-sandbox-config.yaml" 2>/dev/null; then
+        exec "${BIN_DIR}/ocs-run" "${plan_first}" "$@" --agent plan
+      else
+        echo "ocs: 'ocs plan' is not supported on pi projects (pi-mini/pi-full)." >&2
+        echo "ocs: pi projects run the pi engine directly — use 'ocs run' for a pi one-shot." >&2
+        exit 1
+      fi
     fi
     echo "ocs: 'ocs plan' needs a project — pass a name ('ocs plan <name> <prompt>'), or run from inside a sandbox project ('ocs list' shows names)." >&2
     exit 1

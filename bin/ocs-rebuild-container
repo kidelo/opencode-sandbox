@@ -143,6 +143,12 @@ if [[ -f "${CONFIG_FILE}" ]]; then
        cfg_landlock="off"
        cfg_egress_audit="off"
        cfg_nofile=""
+       # pi agent model baseUrl (pi projects only; the `pi-base-url:` config
+       # key, validated — required for pi projects — against the project's
+       # intranet-endpoints:). Passed as --build-arg PI_BASE_URL to the
+       # pi-mini/pi-full tails, which bake it into the image's models.json.
+       # The pi bases are host-shared again (no per-project URL baked there).
+       cfg_pi_base_url=""
        # pi agent extra plugins (pi one-shot door only; the `pi-plugins:` config
        # key, validated to `npm:<name>@<version>` sources, baked into the
        # pi-mini/pi-full images at build time). The base bake already includes
@@ -183,6 +189,7 @@ if [[ -f "${CONFIG_FILE}" ]]; then
                  landlock)                 cfg_landlock="${top_value}" ;;
                  egress-audit)             cfg_egress_audit="${top_value}" ;;
                  nofile)                   cfg_nofile="${top_value}" ;;
+                 pi-base-url)               cfg_pi_base_url="${top_value}" ;;
                  # sandbox-name and workspace are handled by shared
               esac
         fi
@@ -419,6 +426,38 @@ if [[ -f "${CONFIG_FILE}" ]]; then
     done
   done < "${INTRANET_ENDPOINTS}"
 
+  # pi-base-url: per-project models.json baseUrl (pi projects only). For pi the
+  # container has no runtime internet, so models.json is the ONLY way the pi
+  # engine resolves the model — a missing/bad URL fails the bake. It is
+  # REQUIRED for pi projects (pi-mini/pi-full); opencode projects never set it.
+  # The URL's host:port must be in intranet-endpoints: (the rebuild can't
+  # validate the URL itself — only that the endpoint it points at is allowed
+  # through the firewall).
+  if [[ "${cfg_dockerfile}" == "pi-mini" || "${cfg_dockerfile}" == "pi-full" ]]; then
+    if [[ -z "${cfg_pi_base_url}" ]]; then
+      echo "ERROR: 'pi-base-url:' is REQUIRED for pi projects (pi-mini/pi-full) but is empty." >&2
+      exit 1
+    fi
+    # Must be a strict http(s)://ipv4:port/... URL.
+    if [[ ! "${cfg_pi_base_url}" =~ ^https?://[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}:[1-9][0-9]*(/.*)?$ ]]; then
+      echo "ERROR: 'pi-base-url:' '${cfg_pi_base_url}' is not a valid 'http(s)://ipv4:port' URL." >&2
+      exit 1
+    fi
+    # The host:port must be in the validated intranet-endpoints: list. Strip
+    # the scheme (http://) first, then the path, so we compare only the
+    # ipv4:port.
+    ep="${cfg_pi_base_url#*://}"
+    ep="${ep%%/*}"
+    if ! grep -qxF -- "${ep}" "${INTRANET_ENDPOINTS}"; then
+      echo "ERROR: 'pi-base-url:' '${cfg_pi_base_url}' points at '${ep}', which is not in 'intranet-endpoints:'." >&2
+      echo "  Add '${ep}' to the project's intranet-endpoints: list (it must be firewall-allowed)." >&2
+      exit 1
+    fi
+    echo "  pi-base-url: ${cfg_pi_base_url}"
+    printf '%s\n' "${cfg_pi_base_url}" > "${STAGE_DIR}/pi-base-url"
+    chmod u=rw,go= "${STAGE_DIR}/pi-base-url"
+  fi
+
   # Validate host-ports: bare TCP port, 1-65535 (same shape+range rule as the
   # scalar 'opencode-port' above). A bad value would be rejected by iptables
   # at container start (aborting startup) — fail the rebuild with a clear
@@ -556,13 +595,13 @@ fi
 # are NOT driven by OCS_BASE_API — except ocs-base-pi (FROM ocs-base-full),
 # which stamps ocs-base-pi-upstream-api == OCS_BASE_API so a bump there
 # invalidates it too.
-OCS_BASE_API="12"
+OCS_BASE_API="13"
 OPENCODE_BUILD_VERSION="2.3.2"
 # Single source of the pi-bake stack version (stamped as the
 # ocs-base-pi-deps label and checked in the pi-base reuse keys): the pi CLI +
 # extra plugins baked into the pi bases. Node version tracks the prebuilt
 # toolchain in the bases (v24.22.3, pinned there as ARG NODE_VERSION).
-OCS_PI_BASE_DEPS="node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lsp@0.1.8"
+OCS_PI_BASE_DEPS="node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lens@4.5.1,pi-memory@0.4.2"
 
 # --- Locales -----------------------------------------------------------------
 # Detect the host's UTF-8-capable locales (`locale -a`) and use them for the
@@ -775,13 +814,20 @@ ensure_pi_base_minimal() {
 ensure_pi_base_full() {
   local tag="${1:?base image name is required}"
   local dockerfile="${2:?base Dockerfile path is required}"
-  local base_uid="" base_gid="" base_deps="" base_upstream="" base_locale=""
+  local lsp_sha="${3:?LSP plugin sha is required}"
+  local base_uid="" base_gid="" base_deps="" base_upstream="" base_locale="" base_lsp_sha=""
   base_uid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-uid"}}' "${tag}" 2>/dev/null)" || true
   base_gid="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-gid"}}' "${tag}" 2>/dev/null)" || true
   base_deps="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-deps"}}' "${tag}" 2>/dev/null)" || true
   base_upstream="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-upstream-api"}}' "${tag}" 2>/dev/null)" || true
   base_locale="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-locale"}}' "${tag}" 2>/dev/null)" || true
-  if [[ "${base_uid}" == "${USER_ID}" && "${base_gid}" == "${GROUP_ID}" && "${base_deps}" == "${OCS_PI_BASE_DEPS}" && "${base_upstream}" == "${OCS_BASE_API}" && "${base_locale}" == "${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" ]]; then
+  # ocs-base-pi stamps its own LSP sha (the pyright + pi-lens + pi-memory bake
+  # rides on ocs-base-full, whose LSP plugin tarball sha is stamped as
+  # `ocs-base-full-lsp` there). An LSP-only change must re-bake ocs-base-pi too
+  # (otherwise a cached ocs-base-pi built from the old pyright/LSP stack would
+  # stay "current").
+  base_lsp_sha="$("${CONTAINER_RUNTIME}" image inspect --format '{{index .Config.Labels "ocs-base-pi-lsp"}}' "${tag}" 2>/dev/null)" || true
+  if [[ "${base_uid}" == "${USER_ID}" && "${base_gid}" == "${GROUP_ID}" && "${base_deps}" == "${OCS_PI_BASE_DEPS}" && "${base_upstream}" == "${OCS_BASE_API}" && "${base_locale}" == "${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" && "${base_lsp_sha}" == "${_lsp_sha}" ]]; then
     echo "  ✓ Reusing precompiled pi base image '${tag}' — skipping its shared layers"
     return 0
   fi
@@ -799,6 +845,7 @@ ensure_pi_base_full() {
     --label "ocs-base-pi-gid=${GROUP_ID}" \
     --label "ocs-base-pi-deps=${OCS_PI_BASE_DEPS}" \
     --label "ocs-base-pi-upstream-api=${OCS_BASE_API}" \
+    --label "ocs-base-pi-lsp=${_lsp_sha}" \
     --label "ocs-base-pi-locale=${HOST_LOCALES}|${HOST_LOCALE_DEFAULT}" \
     -t "${tag}" \
     -f "${dockerfile}" \
@@ -830,7 +877,7 @@ case "${DOCKERFILE_NAME}" in
     ensure_base_image "ocs-base" "${SANDBOX_HOME}/config/base.Dockerfile"
     _lsp_sha="$(ensure_lsp_plugin_tarball)"
     ensure_base_image "ocs-base-full" "${SANDBOX_HOME}/config/base-full.Dockerfile" "${_lsp_sha}"
-    ensure_pi_base_full "ocs-base-pi" "${SANDBOX_HOME}/config/base-pi.Dockerfile"
+    ensure_pi_base_full "ocs-base-pi" "${SANDBOX_HOME}/config/base-pi.Dockerfile" "${_lsp_sha}"
     ;;
   test)
     if [[ "${OCS_TEST_BASE_IMAGE:-ocs-base}" == "ocs-base-pi-minimal" ]]; then
@@ -869,6 +916,7 @@ set +f
 if "${CONTAINER_RUNTIME}" build \
   --build-arg "USER_ID=${USER_ID}" \
   --build-arg "GROUP_ID=${GROUP_ID}" \
+  --build-arg "PI_BASE_URL=${cfg_pi_base_url}" \
   ${EXTRA_ARGS_ARRAY[@]+"${EXTRA_ARGS_ARRAY[@]}"} \
   -t "${BUILD_IMAGE_TAG}" \
   -f "${DOCKERFILE_PATH}" \

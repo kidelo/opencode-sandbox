@@ -34,6 +34,14 @@ sandbox-network-cidr: 10.77.0.0/16
 # Defaults to `minimal` when unset. Requires a rebuild.
 dockerfile: full
 
+# --- pi agent model baseUrl (pi one-shot door only) ---------------------------
+# Per-project models.json baseUrl for pi projects (dockerfile: pi-mini / pi-full).
+# The container has NO runtime internet, so models.json is the ONLY way the pi
+# engine resolves the model — this URL must point at the intranet ollama
+# endpoint. REQUIRED for pi projects; the URL's host:port must be in the
+# project's intranet-endpoints: list (it must be firewall-allowed). Leave
+# commented out only if you're not using the pi engine. Requires a rebuild.
+# pi-base-url: http://192.168.0.139:11434/v1
 # --- pi agent extra plugins (pi one-shot door only) --------------------------
 # List of extra pi plugins to bake into the pi base image at rebuild time.
 # Format: npm:<name>@<version>. The container has NO runtime internet, so
