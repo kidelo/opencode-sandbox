@@ -9,6 +9,10 @@
 # not committed; see AGENTS.md "OpenCode LSP/Plugin").
 config/plugin.tar.gz
 
+# Local POC/dev artifacts (the pi-run PoC that preceded the v0.12 pi-engine
+# implementation — design-only, not referenced by the harness code).
+pocs/
+
 # Sandbox projects (created by 'ocs init' under ./sandboxes/) are local and
 # ignored — new projects are not committed to the repo by default.
 sandboxes/*
