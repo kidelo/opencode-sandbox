@@ -632,7 +632,11 @@ OPENCODE_BUILD_VERSION="2.3.2"
 # ocs-base-pi-deps label and checked in the pi-base reuse keys): the pi CLI +
 # extra plugins baked into the pi bases. Node version tracks the prebuilt
 # toolchain in the bases (v24.22.3, pinned there as ARG NODE_VERSION).
-OCS_PI_BASE_DEPS="node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lens@4.5.1,pi-memory@0.4.2"
+# It is also the reuse key for the pi bases' whole layer set, so BUMP IT
+# whenever config/base-pi-minimal.Dockerfile or config/base-pi.Dockerfile
+# changes (layer set / structure) — a versionless token tracks a non-pinned
+# apt-set change (the trailing `ripgrep` = base-pi-minimal's apt set).
+OCS_PI_BASE_DEPS="node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lens@4.5.1,pi-memory@0.4.2,ripgrep"
 
 # --- Locales -----------------------------------------------------------------
 # Detect the host's UTF-8-capable locales (`locale -a`) and use them for the

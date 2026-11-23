@@ -38,16 +38,21 @@ ENV WORKSPACE_DIR=${WORKSPACE_DIR} \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # --- OS packages (the intersection of every profile's set) ----------------
-# Mirrors the SHARED apt set from base.Dockerfile: build-essential, curl,
+# Mirrors the SHARED apt set from base.Dockerfile (build-essential, curl,
 # ca-certificates, git, xdg-utils, gosu, procps, squid, tmux, iptables,
-# iproute2, iputils-ping, netcat-openbsd, dnsutils, whois. These are the common
-# sandbox-harness packages; pi-mini re-declares nothing else of its own.
+# iproute2, iputils-ping, netcat-openbsd, dnsutils, whois) PLUS ripgrep —
+# added for parity with pi-full, which already inherits it from ocs-base-full
+# (see base-full); base.Dockerfile itself does not install it, so this is the
+# deliberate divergence of the independent pi-mini base from the shared set.
+# These are the common sandbox-harness packages; pi-mini re-declares nothing
+# else of its own.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
         ca-certificates \
         git \
+        ripgrep \
         xdg-utils \
         gosu \
         procps \
