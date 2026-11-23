@@ -58,19 +58,25 @@ RUN set -e ; \
        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-subagents@0.89.2 \
     && chown -R "${USER_ID}:${GROUP_ID}" "${PI_CODING_AGENT_DIR}"
 
-# --- pi-lens + pi-memory extensions (built-in LSP + memory plugins) ---------
-# Same extensions as base-pi-minimal (see there). In this chain
+# --- pi-lens extension (built-in LSP) ---------------------------------------
+# Same extension as base-pi-minimal (see there). In this chain
 # pyright-langserver comes from the pip pyright package (the full toolchain —
 # the `command -v` guard makes the bake FAIL if it is ever absent: the server
 # is part of the pi engine's built-in LSP surface). pi-lens auto-detects the
-# server with zero config (its own global config lives in ~/.pi-lens/). pi-memory
-# brings the memory extension (core tools; no qmd backend).
+# server with zero config (its own global config lives in ~/.pi-lens/).
+# context-mode (npm:context-mode) is baked in alongside pi-lens — the
+# context-window saver (FTS5 search, sandboxed code execution, session
+# continuity). It lists `pi` as a first-class target and has no external
+# runtime deps, so it works fully offline.
+# pi-memory (npm:pi-memory, the memory_search tool) is NOT baked here either:
+# its runtime backend (qmd) needs 3 GGUF models the offline pi base cannot
+# fetch at runtime, so it is dropped to keep the bake lean.
 RUN set -e ; \
     command -v pyright-langserver \
     && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
         "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-lens@4.5.1 \
     && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
-        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-memory@0.4.2 \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:context-mode \
     && chown -R "${USER_ID}:${GROUP_ID}" "${PI_CODING_AGENT_DIR}"
 
 WORKDIR ${WORKSPACE_DIR}

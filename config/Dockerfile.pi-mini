@@ -6,8 +6,10 @@
 # built). That base already carries: the Debian base + the common sandbox-
 # harness apt set (squid/iptables/gosu/…) + the `dev` user + dirs + the git-
 # hook neutralization + the xdg-open stub + the prebuilt Node.js toolchain +
-# the baked pi-agent managed tree (pi CLI + pi-subagents + pi-lens +
-# pi-memory) (so `pi --print --offline` resolves the model with no internet).
+# the baked pi-agent managed tree (pi CLI + pi-subagents + pi-lens; pi-memory is
+# intentionally NOT baked — its runtime backend qmd needs GGUF models the offline pi base
+# cannot fetch at runtime) (so `pi --print --offline` resolves the model with
+# no internet).
 #
 # This profile adds ONLY the PER-PROJECT configuration variables: the squid
 # whitelist/config, host-ports, intranet-endpoints, agent-dns, landlock helper,

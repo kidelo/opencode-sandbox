@@ -12,8 +12,9 @@
 # `command -v opencode`).
 # The base already has the Debian base, the common apt set (the sandbox
 # harness: squid/iptables/gosu/iproute2/iputils-ping/netcat-openbsd/dnsutils/
-# whois) — plus the engine bake: the pi-agent managed tree (pi-lens +
-# pi-memory, no models.json — per-project now) for the pi bases, or the
+# whois) — plus the engine bake: the pi-agent managed tree (pi-lens; pi-memory is intentionally NOT baked —
+# its runtime backend qmd needs GGUF models the offline pi base cannot fetch at
+# runtime) for the pi bases, or the
 # opencode CLI for the `ocs-base` default. This profile adds ONLY what the
 # network-analysis suite needs beyond that base: the network-analysis
 # toolbox + `jq` + the reserved harness egress args + the listener.

@@ -18,6 +18,36 @@ GitHub release tags.
 
 ---
 
+## v0.15 — context-mode baked into both pi bases + pi-memory intentionally dropped
+
+Both pi bases (`ocs-base-pi-minimal` / `ocs-base-pi`) now bake in **`context-mode`** 2.2.2 alongside `pi-lens`, and **`pi-memory` 0.4.2 is intentionally dropped** (the `memory_search` tool is not shipped offline). context-mode is the context-window saver (FTS5 search over recent files + the working tree, sandboxed code execution, session continuity); it lists `pi` as a first-class target and has no external runtime deps, so it works fully offline. pi-memory's runtime backend (qmd) needs 3 GGUF models the offline pi base cannot fetch at runtime, so it is dropped to keep the bake lean — the persistent note-taking surface (pi-subagents) stays untouched. The pi-base reuse key `OCS_PI_BASE_DEPS` is bumped so a warm host re-bakes the pi bases.
+
+### Highlights
+
+- **`context-mode` baked into both pi bases.** `config/base-pi-minimal.Dockerfile` and `config/base-pi.Dockerfile` install `npm:context-mode@2.2.2` (right after the pi-lens install in the RUN block). It is the context-window saver — FTS5 full-text search over recent files + the working tree, sandboxed code execution, and session continuity (it remembers where you were so a long context survives across a session). It lists `pi` as a first-class target and has **no external runtime deps**, so it works fully offline — a good complement to pi-lens's LSP surface. Both tails and README/AGENTS doc it.
+- **`pi-memory` 0.4.2 dropped (memory_search not shipped offline).** `config/base-pi-minimal.Dockerfile` and `config/base-pi.Dockerfile` no longer `pi install npm:pi-memory@0.4.2`. The tool is registered by the pi-memory plugin, but its runtime backend (qmd) needs 3 GGUF models (a generation model + a rerank model) the offline pi base cannot fetch at runtime (~2 GB baked, a separate opt-in option). Dropping it keeps the bake lean; the persistent note-taking surface (pi-subagents) is unaffected. Every remaining `pi-memory` mention across `config/`, `bin/`, `README.md`, and `AGENTS.md` now documents it as *intentionally not baked*.
+- **`OCS_PI_BASE_DEPS` bumped (cache invalidation).** `bin/ocs-rebuild-container` gains `context-mode@2.2.2` and drops `pi-memory@0.4.2` from the reuse key (`node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lens@4.5.1,context-mode@2.2.2,ripgrep`). A warm host re-bakes `ocs-base-pi-minimal` (and `ocs-base-pi`, which shares the label — a harmless one-time re-bake) on the next `ocs rebuild`.
+
+### Upgrade steps
+
+- `git pull`, then `ocs rebuild <name>` for a pi project — `ocs-base-pi-minimal` (and `ocs-base-pi`) re-bake once on a host with a pre-context-mode / pre-pi-memory drop cached image; fresh hosts build it with `context-mode` and without `pi-memory` from the start. Opencode projects are unaffected (their bases are driven by `OCS_BASE_API`, unchanged here).
+- Verify in-image: `pi list` / `pi --plugins` in a pi container lists `context-mode`; `memory_search` is absent. `docker inspect ocs-base-pi-minimal` shows the `ocs-base-pi-deps` label now carrying `context-mode@2.2.2` and no longer `pi-memory@0.4.2`.
+
+### Verification
+
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+- `bash -n bin/ocs-rebuild-container` → OK ✅
+- `OCS_PI_BASE_DEPS` consumed only as a label value + reuse-key comparison (never parsed as a build arg), so the versioned tokens are safe.
+- No `install npm:pi-memory` call remains anywhere in `config/` or `bin/`; every remaining `pi-memory` reference documents it as intentionally not baked.
+
+### Release metadata (v0.15)
+
+- **Base:** `2ee7301`
+- **Commits in range (files):** `config/base-pi-minimal.Dockerfile` (drop pi-memory + add context-mode install + comment), `config/base-pi.Dockerfile` (same), `bin/ocs-rebuild-container` (`OCS_PI_BASE_DEPS` bump), `config/Dockerfile.pi-full` / `.pi-mini` / `.test` (comment), `README.md` (context-mode doc + version markers), `AGENTS.md` (pi-chain deps list + context-mode bullet)
+- **Tag (planned):** `RELEASE_V0.15-KIDELO` — not yet published (local milestone; publish + header bookkeeping on the next push)
+
+---
+
 ## v0.14 — ripgrep on the independent pi-mini base + explicit pi-base bump rule
 
 `ripgrep` is now installed on `ocs-base-pi-minimal` (`config/base-pi-minimal.Dockerfile`), closing the parity gap with `pi-full` (which already inherits it via `ocs-base-pi` → `ocs-base-full`). The pi-base reuse key `OCS_PI_BASE_DEPS` is bumped in the same commit so a cached `ocs-base-pi-minimal` built *without* ripgrep is re-baked instead of silently reused, and the pi-chain bump rule is stated explicitly.

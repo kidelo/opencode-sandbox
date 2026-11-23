@@ -6,8 +6,12 @@
 # That base already carries: the Debian base + the common sandbox-harness apt
 # set + the `dev` user + dirs + the git-hook neutralization + the xdg-open
 # stub + the prebuilt Node.js toolchain + the baked pi-agent managed tree
-# (pi CLI + pi-subagents + pi-lens + pi-memory; so `pi --print --offline`
-# resolves the model with no internet) PLUS the full dev toolchain
+# (pi CLI + pi-subagents + pi-lens — so `pi --print --offline` resolves the
+# model with no internet) PLUS the full dev toolchain (shellcheck,
+# CSV/OCR/PDF/graphviz/fonts/…) and the large pip data/office/sci stack.
+# Extra plugins via the per-project `pi-plugins:` key (baked at build time by
+# the block below). `models.json` is per-project, baked from the PI_BASE_URL
+# build arg — see the block below.
 # (shellcheck, CSV/OCR/PDF/graphviz/fonts/…) and the large pip data/office/
 # PDF/OCR/sci stack + any pi-plugins: entries (baked at build time by the
 # block below). (models.json is per-project, baked from the PI_BASE_URL build
@@ -78,8 +82,8 @@ RUN chmod 0644 /opt/ocs/landlock.py
 # pi-plugins.txt (space-separated `npm:<spec>` sources, validated by
 # `ocs rebuild`) is baked here: extra plugins must already be in the image —
 # the container has no runtime internet (pi itself runs `--print --offline`).
-# (pi-subagents@0.89.2 is in both pi bases already; pi-lens@4.5.1 and
-# pi-memory@0.4.2 are in the bases too.)
+# (pi-subagents@0.89.2 is in both pi bases already; pi-lens@4.5.1 is in the
+# bases too. pi-memory is NOT baked — see base-pi-minimal.Dockerfile.)
 COPY pi-plugins.txt /tmp/pi-plugins.txt
 RUN set -e ; \
     for p in $(cat /tmp/pi-plugins.txt); do \

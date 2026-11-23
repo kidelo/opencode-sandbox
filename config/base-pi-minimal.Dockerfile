@@ -143,7 +143,7 @@ RUN set -e ; \
        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-subagents@0.89.2 \
     && chown -R "${USER_ID}:${GROUP_ID}" "${PI_CODING_AGENT_DIR}"
 
-# --- pi-lens + pi-memory extensions (built-in LSP + memory plugins) ---------
+# --- pi-lens extension (built-in LSP) ---------------------------------------
 # pi-lens (npm:pi-lens, apmantza/pi-lens) is baked in by default: it registers
 # LLM tools (lsp_diagnostics, lsp_hover, lsp_definition, lsp_references,
 # lsp_symbols) and appends diagnostics to write/edit results. It zero-config
@@ -157,15 +157,23 @@ RUN set -e ; \
 # (biome/prettier/yamllint, GitHub-release binaries) need internet — the
 # container has none at runtime, so they fail gracefully; the core LSP path
 # works offline.
-# pi-memory (npm:pi-memory) is the memory extension (the agent's persistent
-# memory; core tools, no qmd semantic-search backend is baked — the container
-# has no internet for it).
+# context-mode (npm:context-mode) is the context-window saver baked in alongside
+# pi-lens: FTS5 search over recent files + the working tree, sandboxed code
+# execution, and session continuity (it remembers where you were so a long
+# context window survives across a session). It is engine-agnostic and lists
+# `pi` as a first-class target; it has no external runtime deps, so it works
+# fully offline.
+# pi-memory (npm:pi-memory) is NOT baked: it registers the memory_search tool,
+# but its runtime backend (qmd) needs 3 GGUF models that the container has no
+# internet to fetch at runtime (qmd embed/query needs a generation + rerank
+# model, neither of which the offline pi base carries). Dropping it keeps the
+# offline bake lean — the persistent note-taking surface (pi-subagents) stays.
 RUN set -e ; \
     command -v pyright-langserver || npm install -g --ignore-scripts pyright@1.1.414 \
     && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
         "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-lens@4.5.1 \
     && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
-        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-memory@0.4.2 \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:context-mode \
     && chown -R "${USER_ID}:${GROUP_ID}" "${PI_CODING_AGENT_DIR}"
 
 # --- base reuse labels --------------------------------------------------------
