@@ -6,7 +6,9 @@ The **living** release document for the `opencode-sandbox` fork.
 release (see AGENTS.md → "Release notes"). When publishing on GitHub: paste
 the newest section into the release body and tag `RELEASE_v<X.Y>-KIDELO`.
 
-Last published GitHub releases: `RELEASE_V0.13-KIDELO` (2026-11-22),
+Last published GitHub releases: `RELEASE_V0.15-KIDELO` (2026-11-23),
+`RELEASE_V0.14-KIDELO` (2026-11-23),
+`RELEASE_V0.13-KIDELO` (2026-11-22),
 `RELEASE_V0.11-KIDELO` (2026-11-21),
 `RELEASE_V0.10-KIDELO` (2026-11-04),
 `RELEASE_V0.9-KIDELO` (2026-11-04),
@@ -50,7 +52,7 @@ Both pi bases (`ocs-base-pi-minimal` / `ocs-base-pi`) now bake in **`context-mod
 
 - **Base:** `2ee7301`
 - **Commits in range (files):** `config/base-pi-minimal.Dockerfile` (drop pi-memory + add context-mode / pi-rlm / pi-better-edit / ponytail / rpiv-todo / rpiv-ask-user-question / pi-goal-x install + comments), `config/base-pi.Dockerfile` (same), `bin/ocs-rebuild-container` (`OCS_PI_BASE_DEPS` bump), `config/Dockerfile.pi-full` / `.pi-mini` / `.test` (comment), `README.md` (context-mode / pi-rlm / pi-better-edit / ponytail / rpiv-todo / rpiv-ask-user-question / pi-goal-x docs + version markers), `AGENTS.md` (pi-chain deps list + context-mode / pi-rlm / pi-better-edit / ponytail / rpiv-todo / rpiv-ask-user-question / pi-goal-x bullets), `RELEASE_NOTES.md` (v0.15 section)
-- **Tag (planned):** `RELEASE_V0.15-KIDELO` — not yet published (local milestone; publish + header bookkeeping on the next push)
+- **Tag (published):** `RELEASE_V0.15-KIDELO` (2026-11-23)
 
 ---
 
@@ -79,7 +81,7 @@ Both pi bases (`ocs-base-pi-minimal` / `ocs-base-pi`) now bake in **`context-mod
 
 - **Base:** `2ee7301`
 - **Commits in range (files):** `config/base-pi-minimal.Dockerfile` (`ripgrep` apt entry + comment), `bin/ocs-rebuild-container` (`OCS_PI_BASE_DEPS` bump + rule comment), `AGENTS.md` (pi-chain bump rule), `README.md` (version-markers list)
-- **Tag (planned):** `RELEASE_V0.14-KIDELO` — not yet published (local milestone; publish + header bookkeeping on the next push)
+- **Tag (published):** `RELEASE_V0.14-KIDELO` (2026-11-23)
 
 ---
 
@@ -1111,7 +1113,7 @@ install — the container keeps being the only place OpenCode runs.
 
 | Release | Theme | Tag |
 |---|---|---|
-| **v0.15** | **four more pi extensions baked into both pi bases** — `@dietrichgebert/ponytail` 5.3.3 (lazy-senior-dev code reviewer), `@juicesharp/rpiv-todo` 2.15.0 (live todo overlay), `@juicesharp/rpiv-ask-user-question` 2.15.0 (typed questionnaire with fixed options), `pi-goal-x` 0.34.1 (conversational goal planner); each a pi extension with no external runtime deps so it works fully offline; `OCS_PI_BASE_DEPS` bumped (cache invalidation) | `RELEASE_V0.15-KIDELO` (planned) |
+| **v0.15** | **four more pi extensions baked into both pi bases** — `@dietrichgebert/ponytail` 5.3.3 (lazy-senior-dev code reviewer), `@juicesharp/rpiv-todo` 2.15.0 (live todo overlay), `@juicesharp/rpiv-ask-user-question` 2.15.0 (typed questionnaire with fixed options), `pi-goal-x` 0.34.1 (conversational goal planner); each a pi extension with no external runtime deps so it works fully offline; `OCS_PI_BASE_DEPS` bumped (cache invalidation) | `RELEASE_V0.15-KIDELO` (published) |
 | **v0.14** | **ripgrep on the independent `ocs-base-pi-minimal`** (parity with `pi-full`, which inherits it via `ocs-base-pi` → `ocs-base-full`) + the pi-base bump rule stated explicitly; `OCS_PI_BASE_DEPS` gains a versionless `ripgrep` token so a warm host re-bakes instead of reusing the stale image | `RELEASE_V0.14-KIDELO` (planned) |
 | **v0.13** | **unified multi-model catalog** — `config/opencode.jsonc` `providers.ollama.models` is the single source for **both** engines (opencode reads it at runtime; pi derives `models.json` from it via `COPY`); **`pi-base-url:` now REQUIRED** for pi (host:port must be in `intranet-endpoints:`); `ocs init` derives `pi-base-url:` from the config's `baseURL` (no prompt); `config/ARCHITECTURE.md` documents the single source | `RELEASE_V0.13-KIDELO` (published) |
 | **v0.12** | **second agent engine: the pi one-shot door** (`dockerfile: pi-mini`/`pi-full`, precompiled `ocs-base-pi-minimal`/`ocs-base-pi` bases, offline `models.json` pin, `pi-plugins:` key) + **built-in LSP** (`pi-lsp@0.1.8` + pyright in the pi bases; opencode-v2-lsp-support in `ocs-base-full`) + **default model `ornith-1.5:9b`** (context 131072) + dual-engine `ocs test` (`TEST_API` 12, `ocs-base-image` reuse label) | `RELEASE_V0.12-KIDELO` (planned) |
