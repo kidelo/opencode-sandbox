@@ -8,7 +8,7 @@
 
 OpenCode is a powerful AI coding assistant — but by default it runs on your host machine with broad access to your environment, shared session state, and a single global configuration for all projects.
 
-**opencode-sandbox** runs OpenCode inside a Docker container, giving each project its own isolated environment:
+**opencode-sandbox** runs AI coding agents inside a Docker container, giving each project its own isolated environment — with **two co-equal engines**: **OpenCode** (the namesake) and **pi**.
 
 - 🔒 **Scoped access** — OpenCode sees only one read-write directory, the project **workspace**; its config is mounted **read-only**, extra input dirs can be mounted read-only (`read-only-mounts`), and the sandbox's own runtime state is hidden from it
 - 🧩 **Per-project configuration** — AI providers, API keys, and model settings are configured independently per project
@@ -19,6 +19,8 @@ OpenCode is a powerful AI coding assistant — but by default it runs on your ho
 - 🧲 **DNS-tunnel blocked** — the agent cannot use the resolver `127.0.0.11:53` as an exfil/C2 channel (uid-scoped drop by default; squid-uid and all IP-only endpoints unaffected — re-open only by explicit choice via `agent-dns: allow`)
 - 🧪 **Verified** — a built-in 30-case security suite (`ocs test`) proves the isolation: unprivileged user, no Docker escape, no root-file read, no system write, no secret read, no egress, resource limits active, two running containers cannot see each other, the DNS-tunnel gate is in the configured state, and the mounted config **actually pins the model catalog** (every catalog model resolves, context limits present) — **all blocked/verified**
 
+> > **Named after OpenCode, not limited to it.** This repo is named `opencode-sandbox` because OpenCode is the engine it first shipped — but **pi is a first-class engine of its own**: own precompiled base images (`ocs-base-pi-minimal` / `ocs-base-pi`), own doors (`ocs run`/`ocs tui` auto-select the engine), own persistent `pi-agent/` dir, and its own model catalog (derived from the same `opencode.jsonc`). You pick the engine **per project** via the `dockerfile:` key — OpenCode: `minimal`/`full`; pi: `pi-mini`/`pi-full`.
+
 **Quick start**
 
 ```bash
@@ -27,7 +29,7 @@ export PATH="…/opencode-sandbox:$PATH"
 ocs init my-sandbox && ocs start my-sandbox   # → http://127.0.0.1:4096
 ```
 
-**Inside the container** there is exactly **one** user read-write directory — `/workspace` (your project's `workspace/`). Everything OpenCode needs besides that is read-only or internal: `opencode.jsonc` (model/provider/permissions) at `/etc/opencode/opencode.jsonc` (**read-only**, so the agent can read its own config but never rewrite it), and the OpenCode session/read-write state tree (persistent, at `/home/dev/.local/share/opencode`). You may additionally mount extra host dirs read-write (`volume-mounts`) or **read-only** (`read-only-mounts`) — the workspace remains the single writable output dir. The sandbox's build context and `.sandbox` runtime tree are **never visible** in the container.
+**Inside the container** there is exactly **one** user read-write directory — `/workspace` (your project's `workspace/`). Everything the agent needs besides that is read-only or internal: `opencode.jsonc` (model/provider/permissions) at `/etc/opencode/opencode.jsonc` (**read-only**, so the agent can read its own config but never rewrite it), and the persistent state tree — for the **OpenCode** engine this is the OpenCode session/read-write state (persistent, at `/home/dev/.local/share/opencode`); for the **pi** engine the persistent rw state lives instead in the workspace's `pi-agent/` dir (see "Agent engines" below). You may additionally mount extra host dirs read-write (`volume-mounts`) or **read-only** (`read-only-mounts`) — the workspace remains the single writable output dir. The sandbox's build context and `.sandbox` runtime tree are **never visible** in the container.
 
 The container is based on Debian (python:3.13-slim-bookworm). All software — OpenCode, shell packages, and (in the `full` profile) the dev toolchain — is installed via `apt` (and `pip` for the Python data/office/PDF/OCR/sci stack) during the image build. **No extra toolchain (mise, etc.) needs to be installed on your host, and the container has no access to your Docker daemon.**
 
@@ -46,7 +48,7 @@ The container is based on Debian (python:3.13-slim-bookworm). All software — O
 - [Commands](#commands)
   - [`ocs init`](#ocs-init-name) · [`ocs rebuild`](#ocs-rebuild-name) · [`ocs start`](#ocs-start-name) · [`ocs web`](#ocs-web-name) · [`ocs web-auth`](#ocs-web-auth-name)
    - [`ocs terminal`](#ocs-terminal-name) · [`ocs tui`](#ocs-tui-name-resume-flags-mode) · [`ocs run`](#ocs-run-name-prompt) · [`ocs plan`](#ocs-plan-name-prompt) · [`ocs test`](#ocs-test-name)
-   - [Engine: pi-mini / pi-full](#engine-pi-mini--pi-full)
+   - [Agent engines (OpenCode + pi)](#agent-engines-opencode--pi)
   - [`ocs clean`](#ocs-clean-name) · [`ocs kill`](#ocs-kill) · [`ocs list`](#ocs-list) · [`ocs status`](#ocs-status-name) · [`ocs logs`](#ocs-logs-name-flags)
 - [Container lifecycle](#container-lifecycle)
 - [Network isolation](#network-isolation)
@@ -624,9 +626,9 @@ No rebuild is needed to add agents/skills — they are live workspace files. Det
 
 ---
 
-## Engine: pi-mini / pi-full
+## Agent engines (OpenCode + pi)
 
-The sandbox has a second agent engine — **pi** (`@earendil-works/pi-coding-agent` npm package; the `pi` CLI, pinned at 1.4.0) — with its own interactive TUI and one-shot mode. A project opts in via the `dockerfile:` key:
+The sandbox runs **two co-equal agent engines** — OpenCode and pi — with their own precompiled base images, own doors, and their own persistent state. A project opts in to pi via the `dockerfile:` key (pi: `pi-mini`/`pi-full`; OpenCode: `minimal`/`full`). They share the same config (`opencode.jsonc`) and the same isolation/hardening, but each is a first-class environment:
 
 | | opencode (`minimal` / `full`) | pi (`pi-mini` / `pi-full`) |
 |---|---|---|
