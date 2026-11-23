@@ -163,6 +163,15 @@ RUN set -e ; \
 # context window survives across a session). It is engine-agnostic and lists
 # `pi` as a first-class target; it has no external runtime deps, so it works
 # fully offline.
+# @hicaru/pi-rlm (npm:@hicaru/pi-rlm) is baked in as the recursive language
+# model (RLM): it re-processes an edited region (the diff) through the model
+# again to save the tokens a full re-read would cost. It is a pi extension with
+# no external runtime deps, so it works fully offline.
+# pi-better-edit (npm:pi-better-edit) is baked in as the hash-anchored
+# read/edit/undo extension: every line gets a stable 4-char hash that survives
+# edits, stale anchors are rejected instead of fuzzy-matched, and undo persists
+# across restarts. It is a pi extension with no external runtime deps, so it
+# works fully offline.
 # pi-memory (npm:pi-memory) is NOT baked: it registers the memory_search tool,
 # but its runtime backend (qmd) needs 3 GGUF models that the container has no
 # internet to fetch at runtime (qmd embed/query needs a generation + rerank
@@ -174,6 +183,10 @@ RUN set -e ; \
         "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-lens@4.5.1 \
     && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
         "${PI_CODING_AGENT_DIR}/bin/pi" install npm:context-mode \
+    && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:@hicaru/pi-rlm@0.3.31 \
+    && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-better-edit@2.19.3 \
     && chown -R "${USER_ID}:${GROUP_ID}" "${PI_CODING_AGENT_DIR}"
 
 # --- base reuse labels --------------------------------------------------------
