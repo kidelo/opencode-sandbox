@@ -18,6 +18,35 @@ GitHub release tags.
 
 ---
 
+## v0.14 — ripgrep on the independent pi-mini base + explicit pi-base bump rule
+
+`ripgrep` is now installed on `ocs-base-pi-minimal` (`config/base-pi-minimal.Dockerfile`), closing the parity gap with `pi-full` (which already inherits it via `ocs-base-pi` → `ocs-base-full`). The pi-base reuse key `OCS_PI_BASE_DEPS` is bumped in the same commit so a cached `ocs-base-pi-minimal` built *without* ripgrep is re-baked instead of silently reused, and the pi-chain bump rule is stated explicitly.
+
+### Highlights
+
+- **`ripgrep` on `ocs-base-pi-minimal`.** `config/base-pi-minimal.Dockerfile` is independent of `ocs-base-full` (`FROM python:3.13`), so it does not inherit the `ripgrep` that `pi-full` gets via `ocs-base-pi` → `ocs-base-full`. It is now added to that base's apt set for parity. `base.Dockerfile`'s shared set does not install it — the apt-set comment is reworded to describe the deliberate divergence (not a "mirror" of the shared set).
+- **`OCS_PI_BASE_DEPS` bumped (cache invalidation).** The pi bases are reused while their `ocs-base-pi-uid`/`-gid`/`-deps` labels still match; the `ocs-base-pi-deps` label is the *only* label that encodes the Dockerfile's layer set. Adding `ripgrep` changes the layer set, so the constant gains a versionless `ripgrep` token (`node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lens@4.5.1,pi-memory@0.4.2,ripgrep`) so a warm host re-bakes `ocs-base-pi-minimal` (and `ocs-base-pi`, which shares the label — a harmless one-time re-bake) instead of reusing the stale image.
+- **Pi-chain bump rule made explicit.** `AGENTS.md` and the constant's own comment now state: bump `OCS_PI_BASE_DEPS` whenever `config/base-pi-minimal.Dockerfile` or `config/base-pi.Dockerfile` changes (layer set / structure) — the pi-base equivalent of `OCS_BASE_API`.
+
+### Upgrade steps
+
+- `git pull`, then `ocs rebuild <name>` for a pi project — `ocs-base-pi-minimal` (and `ocs-base-pi`) re-bake once on a host that has a pre-ripgrep cached image; fresh hosts build it with `ripgrep` from the start. Opencode projects are unaffected (their bases are driven by `OCS_BASE_API`, unchanged here).
+- Verify in-image: `command -v rg` in a pi-mini container, or `docker inspect ocs-base-pi-minimal` shows the `ocs-base-pi-deps` label ending in `…,ripgrep`.
+
+### Verification
+
+- `shellcheck ocs bin/* bin/shared docker/entrypoint.sh` → clean ✅
+- `bash -n bin/ocs-rebuild-container` → OK ✅
+- `OCS_PI_BASE_DEPS` consumed only as a label value + reuse-key comparison (never parsed as a build arg), so the versionless token is safe.
+
+### Release metadata (v0.14)
+
+- **Base:** `2ee7301`
+- **Commits in range (files):** `config/base-pi-minimal.Dockerfile` (`ripgrep` apt entry + comment), `bin/ocs-rebuild-container` (`OCS_PI_BASE_DEPS` bump + rule comment), `AGENTS.md` (pi-chain bump rule), `README.md` (version-markers list)
+- **Tag (planned):** `RELEASE_V0.14-KIDELO` — not yet published (local milestone; publish + header bookkeeping on the next push)
+
+---
+
 ## v0.13 — unified multi-model catalog: one config file drives both engines
 
 The model list is now a **single catalog** in the project's `config/opencode.jsonc` (`providers.ollama.models` map) that **both engines consume**: opencode reads it directly at runtime (the catalog is declarative — `opencode models` lists every entry; selection is `-m provider/model#variant` / the TUI model picker), and pi derives its offline `models.json` from the same catalog at `ocs rebuild`. Six models ship by default (`ornith-1.5:9b`, `lfm3:1.7b-q8_0`, `qwen3.8-27b`, `gemma4:e4b`, `bonsai-2:9b`, `mimo-v2.6:latest`), each with `name`, `modelID` (the real ollama tag), and numeric `limit.{context,output}`.
