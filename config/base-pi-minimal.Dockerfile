@@ -163,6 +163,22 @@ RUN set -e ; \
 # context window survives across a session). It is engine-agnostic and lists
 # `pi` as a first-class target; it has no external runtime deps, so it works
 # fully offline.
+# @dietrichgebert/ponytail (npm:@dietrichgebert/ponytail) is baked in as the
+# code-reviewer: it reviews the current edit in a new branch with conversation
+# context and writes the code the laziest senior dev would. It lists `pi` as a
+# first-class target and has no external runtime deps, so it works fully offline.
+# @juicesharp/rpiv-todo (npm:@juicesharp/rpiv-todo) is baked in as the live
+# todo overlay: the model renders a todo list that survives /reload and
+# conversation compaction. It is a pi extension with no external runtime deps,
+# so it works fully offline.
+# @juicesharp/rpiv-ask-user-question (npm:@juicesharp/rpiv-ask-user-question)
+# is baked in as the structured question prompt: when the model would otherwise
+# guess, it puts a typed questionnaire to you with fixed options. It is a pi
+# extension with no external runtime deps, so it works fully offline.
+# pi-goal-x (npm:pi-goal-x) is baked in as the goal planner: it turns an edit
+# into conversational goals with an independent completion auditor and persistent
+# progress. It is a pi extension with no external runtime deps, so it works
+# fully offline.
 # @hicaru/pi-rlm (npm:@hicaru/pi-rlm) is baked in as the recursive language
 # model (RLM): it re-processes an edited region (the diff) through the model
 # again to save the tokens a full re-read would cost. It is a pi extension with
@@ -187,6 +203,14 @@ RUN set -e ; \
         "${PI_CODING_AGENT_DIR}/bin/pi" install npm:@hicaru/pi-rlm@0.3.31 \
     && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
         "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-better-edit@2.19.3 \
+    && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:@dietrichgebert/ponytail@5.3.3 \
+    && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:@juicesharp/rpiv-todo@2.15.0 \
+    && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:@juicesharp/rpiv-ask-user-question@2.15.0 \
+    && PI_CODING_AGENT_DIR="${PI_CODING_AGENT_DIR}" \
+        "${PI_CODING_AGENT_DIR}/bin/pi" install npm:pi-goal-x@0.34.1 \
     && chown -R "${USER_ID}:${GROUP_ID}" "${PI_CODING_AGENT_DIR}"
 
 # --- base reuse labels --------------------------------------------------------

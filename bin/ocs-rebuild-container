@@ -636,7 +636,7 @@ OPENCODE_BUILD_VERSION="2.3.2"
 # whenever config/base-pi-minimal.Dockerfile or config/base-pi.Dockerfile
 # changes (layer set / structure) — a versionless token tracks a non-pinned
 # apt-set change (the trailing `ripgrep` = base-pi-minimal's apt set).
-OCS_PI_BASE_DEPS="node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lens@4.5.1,context-mode@2.2.2,@hicaru/pi-rlm@0.3.31,pi-better-edit@2.19.3,ripgrep"
+OCS_PI_BASE_DEPS="node@v24.22.3,pi@1.4.0,pi-subagents@0.89.2,pi-lens@4.5.1,context-mode@2.2.2,@hicaru/pi-rlm@0.3.31,pi-better-edit@2.19.3,@dietrichgebert/ponytail@5.3.3,@juicesharp/rpiv-todo@2.15.0,@juicesharp/rpiv-ask-user-question@2.15.0,pi-goal-x@0.34.1,ripgrep"
 
 # --- Locales -----------------------------------------------------------------
 # Detect the host's UTF-8-capable locales (`locale -a`) and use them for the
